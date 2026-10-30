@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import requests
 from eth_account import Account
 from genlayer_py import create_client
 from genlayer_py.chains import studionet
@@ -49,7 +50,8 @@ class Studio:
     def __init__(self, credentials_file=None):
         filename = credentials_file or os.environ["RHIZOME_CREDENTIALS_FILE"]
         secrets = json.loads(Path(filename).read_text())
-        self.accounts = {role: Account.from_key(secrets[role + "_private_key"]) for role in ("deployer", "resolver", "insurance")}
+        self.accounts = {key.removesuffix("_private_key"): Account.from_key(value) for key, value in secrets.items() if key.endswith("_private_key")}
+        assert {"deployer", "resolver", "insurance"} <= set(self.accounts), "three consumer/deployer keys required"
         self.clients = {}
         self.journal = ROOT / "verification/live-journal.jsonl"
         self.records = [json.loads(line) for line in self.journal.read_text().splitlines()] if self.journal.exists() else []
@@ -69,13 +71,23 @@ class Studio:
     def client(self, role="deployer"):
         if role not in self.clients:
             c = create_client(chain=studionet, account=self.accounts[role])
-            original = c.provider.make_request
             def paced(method, params):
-                gap = self.min_rpc_interval - (time.monotonic() - self.last_rpc)
-                if gap > 0:
-                    time.sleep(gap)
-                self.last_rpc = time.monotonic()
-                result = original(method, params)
+                result = None
+                for attempt in range(3):
+                    gap = self.min_rpc_interval - (time.monotonic() - self.last_rpc)
+                    if gap > 0:
+                        time.sleep(gap)
+                    self.last_rpc = time.monotonic()
+                    try:
+                        response = requests.post(c.provider.url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=(10, 45))
+                        response.raise_for_status()
+                        result = response.json()
+                        c.provider._raise_on_error(result, method)
+                        break
+                    except (requests.RequestException, ValueError):
+                        if method == "eth_sendRawTransaction" or attempt == 2:
+                            raise
+                        time.sleep(5)
                 if method == "eth_sendRawTransaction" and result.get("result"):
                     self.log({"event": "BROADCAST", "operation": self.current_operation, "ethereum_hash": result["result"]})
                 return result
@@ -105,7 +117,7 @@ class Studio:
             time.sleep(3)
         raise TimeoutError(label + ": still pending, resume by its journaled transaction ID " + tx)
 
-    def submit(self, label, address=None, method=None, args=None, role="deployer", value=0, code=None, expected_error=False):
+    def submit(self, label, address=None, method=None, args=None, role="deployer", value=0, code=None, expected_error=False, wait_for_finality=True):
         assert len(label) <= 100 and all(ch.isalnum() or ch in "-_." for ch in label)
         c = self.client(role)
         payload = {"address": address, "method": method, "args": args or [], "sender": self.accounts[role].address,
@@ -115,9 +127,14 @@ class Studio:
         intents = [r for r in old if r["event"] == "INTENT"]
         if intents:
             assert intents[0]["payload_digest"] == payload_digest, "journal operation conflicts with changed input: " + label
+        finalized = [r for r in old if r["event"] == "FINALIZED"]
+        if finalized:
+            saved = json.loads((ROOT / finalized[-1]["receipt"]).read_text())
+            assert successful(saved) != expected_error, "saved execution outcome differs from expected outcome"
+            return saved if wait_for_finality else saved["hash"]
         submitted = [r for r in old if r["event"] == "SUBMITTED"]
         if submitted:
-            return self.wait(submitted[-1]["tx"], label, expected_error)
+            return self.wait(submitted[-1]["tx"], label, expected_error) if wait_for_finality else submitted[-1]["tx"]
         broadcasts = [r for r in old if r["event"] == "BROADCAST"]
         if broadcasts:
             # Recover consensus ID from the already-broadcast Ethereum receipt.
@@ -128,8 +145,8 @@ class Studio:
             assert events, "broadcast has no consensus transaction; inspect Ethereum receipt"
             tx = c.w3.to_hex(events[0]["args"]["txId"])
             self.log({"event": "SUBMITTED", "operation": label, "tx": tx, "recovered": True})
-            return self.wait(tx, label, expected_error)
-        nonce = c.get_current_nonce()
+            return self.wait(tx, label, expected_error) if wait_for_finality else tx
+        nonce = c.get_current_nonce(address=self.accounts[role].address)
         if intents:
             assert nonce == intents[0]["nonce"], "unreconciled nonce after interrupted broadcast; inspect sender transaction history before replay"
         else:
@@ -144,7 +161,7 @@ class Studio:
             self.current_operation = None
         self.log({"event": "SUBMITTED", "operation": label, "tx": tx})
         print(label, "SUBMITTED", tx, flush=True)
-        return self.wait(tx, label, expected_error)
+        return self.wait(tx, label, expected_error) if wait_for_finality else tx
 
     def read(self, address, method, args=None, role="deployer"):
         return self.client(role).read_contract(address=address, function_name=method, args=args or [])
@@ -169,8 +186,8 @@ class Studio:
             receipt = self.submit("deploy-" + name, args=args, role=role, code=code)
             address = receipt.get("to_address", receipt.get("recipient"))
             assert address and address != "0x" + "0" * 40
-            onchain = self.client().provider.make_request("eth_getCode", [address, "latest"])["result"]
-            assert bytes.fromhex(onchain.removeprefix("0x")) == code, "deployed code differs from pinned local contract"
+            onchain = self.client().provider.make_request("gen_getContractCode", [address])["result"]
+            assert base64.b64decode(onchain, validate=True) == code, "deployed code differs from pinned local contract"
             assert len(agreeing_validators(receipt)) >= 2, "deployment did not show two independent validator agreements"
             result["contracts"][name] = {"address": address, "deployment_tx": receipt["hash"], "code_sha256": hashlib.sha256(code).hexdigest(),
                                           "constructor_args": args, "deployer": self.accounts[role].address}
