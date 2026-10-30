@@ -486,7 +486,7 @@ class Rhizome(gl.Contract):
         self._history({"event": "BATCH_OPENED", "request_id": request_id, "batch_digest": batch_digest})
         return result
 
-    @gl.public.write
+    @gl.public.write.payable
     def reserve_pair(self, request_id: str, left_id: str, right_id: str, operation_id: str) -> dict:
         """Pay and durably reserve an application attempt before nondeterminism."""
         identifier(operation_id)

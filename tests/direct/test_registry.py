@@ -12,6 +12,15 @@ def test_constructor_and_limits(rhizome):
     assert limits["assessment_fee_atto"] == 1
 
 
+def test_sdk_payment_dispatch_schema(module):
+    # Direct calls bypass the runtime method resolver. Check the SDK schema
+    # consumed by dispatch as well as the separate fee-accounting body tests.
+    from genlayer.py.get_schema import get_schema
+    schema = get_schema(module.Rhizome)
+    payable = {name for name, method in schema["methods"].items() if method.get("payable")}
+    assert payable == {"reserve_pair"}
+
+
 @pytest.mark.parametrize("fee", [0, -1, 1 << 256, True])
 def test_constructor_integer_bounds(direct_vm, direct_deploy, direct_owner, fee):
     with direct_vm.expect_revert("integer out of bounds"):

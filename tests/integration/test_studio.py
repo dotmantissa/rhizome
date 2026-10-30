@@ -12,13 +12,13 @@ from pathlib import Path
 import time
 import pytest
 import requests
-from scripts.studio import Studio, ROOT, agreeing_validators, successful
+from scripts.studio import Studio, VERIFICATION, agreeing_validators, successful
 from tests.evidence import canonical, digest, source_packet, record, DEFINITION
 
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def live():
     assert os.environ.get("RHIZOME_CREDENTIALS_FILE"), "provide a secure external credentials file"
     studio = Studio()
@@ -55,7 +55,7 @@ def live():
         sources_pending.append(("attest-" + name, tx))
     for label, tx in sources_pending:
         studio.wait(tx, label)
-    (ROOT / "verification/public-evidence.json").write_text(json.dumps({"classification": "SYNTHETIC TEST RECORDS", "catalog": catalog}, indent=2) + "\n")
+    (VERIFICATION / "public-evidence.json").write_text(json.dumps({"classification": "SYNTHETIC TEST RECORDS", "catalog": catalog}, indent=2) + "\n")
     return studio, source, resolver, insurance, catalog
 
 
@@ -64,7 +64,7 @@ def open_request(live, request_id, names, policy, consumer, subject=None, genera
     sources = [catalog[name]["source"] for name in sorted(names)]
     authorities = [catalog[name]["authority"] for name in sorted(names)]
     manifest = {"sources": sources, "authorities": sorted(authorities, key=lambda a: a["authority_id"])}
-    saved_path = ROOT / "verification/requests" / (request_id + ".json")
+    saved_path = VERIFICATION / "requests" / (request_id + ".json")
     saved_path.parent.mkdir(exist_ok=True)
     if saved_path.exists():
         body = json.loads(saved_path.read_text())

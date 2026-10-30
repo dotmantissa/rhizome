@@ -5,7 +5,7 @@ from pathlib import Path
 import requests
 from tests.evidence import canonical, source_packet
 from tests.integration.test_studio import live, open_request, assess
-from scripts.studio import ROOT
+from scripts.studio import VERIFICATION
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -13,7 +13,7 @@ pytestmark = pytest.mark.integration
 
 def test_changed_public_bytes_cannot_certify_origins(live):
     studio, source, resolver, _, catalog = live
-    saved = ROOT / "verification/changed-source-record.json"
+    saved = VERIFICATION / "changed-source-record.json"
     principal = studio.accounts["deployer"].address
     control, control_raw, metadata, _ = source_packet("changed", principal)
     url = "https://httpbingo.org/uuid?rhizome=source-change-verification"

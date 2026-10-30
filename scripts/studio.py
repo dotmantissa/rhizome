@@ -18,6 +18,9 @@ from genlayer_py import create_client
 from genlayer_py.chains import studionet
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN = os.environ.get("RHIZOME_RUN", "")
+assert not RUN or (len(RUN) <= 64 and all(ch.isalnum() or ch in "-_" for ch in RUN)), "invalid verification run name"
+VERIFICATION = ROOT / "verification" / RUN
 
 
 def canonical(value):
@@ -53,12 +56,13 @@ class Studio:
         self.accounts = {key.removesuffix("_private_key"): Account.from_key(value) for key, value in secrets.items() if key.endswith("_private_key")}
         assert {"deployer", "resolver", "insurance"} <= set(self.accounts), "three consumer/deployer keys required"
         self.clients = {}
-        self.journal = ROOT / "verification/live-journal.jsonl"
+        VERIFICATION.mkdir(parents=True, exist_ok=True)
+        self.journal = VERIFICATION / "live-journal.jsonl"
         self.records = [json.loads(line) for line in self.journal.read_text().splitlines()] if self.journal.exists() else []
         self.last_rpc = 0.0
         self.current_operation = None
         self.min_rpc_interval = float(os.environ.get("RHIZOME_RPC_INTERVAL", "3.8"))
-        (ROOT / "verification/receipts").mkdir(exist_ok=True)
+        (VERIFICATION / "receipts").mkdir(exist_ok=True)
 
     def log(self, event):
         event = sanitize({**event, "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
@@ -101,7 +105,7 @@ class Studio:
             receipt = c.get_transaction(tx)
             status = receipt.get("status_name")
             if status == "FINALIZED":
-                path = ROOT / "verification/receipts" / (label + ".json")
+                path = VERIFICATION / "receipts" / (label + ".json")
                 path.write_text(json.dumps(sanitize(receipt), default=str, indent=2) + "\n")
                 ok = successful(receipt)
                 self.log({"event": "FINALIZED", "operation": label, "tx": tx, "execution_success": ok, "receipt": str(path.relative_to(ROOT))})
@@ -191,7 +195,7 @@ class Studio:
             assert len(agreeing_validators(receipt)) >= 2, "deployment did not show two independent validator agreements"
             result["contracts"][name] = {"address": address, "deployment_tx": receipt["hash"], "code_sha256": hashlib.sha256(code).hexdigest(),
                                           "constructor_args": args, "deployer": self.accounts[role].address}
-            (ROOT / "verification/deployment.json").write_text(json.dumps(result, indent=2) + "\n")
+            (VERIFICATION / "deployment.json").write_text(json.dumps(result, indent=2) + "\n")
         return result
 
 
