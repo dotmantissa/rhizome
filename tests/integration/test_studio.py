@@ -245,3 +245,24 @@ def test_08_source_revision_and_quarantine_at_action_time(live):
     studio.submit("refresh-resolver-subject", resolver, "refresh_subject", ["event-permitted"], role="resolver")
     assert not studio.read(resolver, "get_subject", ["event-permitted"])["permitted"]
     studio.submit("integer-bound-policy", source, "register_policy", ["invalid-count", canonical(DEFINITION), 7], expected_error=True)
+
+
+def test_09_treasury_accounting_and_owner_payout(live):
+    studio, source, _, _, _ = live
+    limits = studio.read(source, "get_limits")
+    treasury = limits["treasury"]
+    totals = studio.read(treasury, "get_totals")
+    assert totals["received_atto"] == limits["charged_atto"] > 0
+    assert totals["balance_atto"] == totals["received_atto"]
+    code = (Path(__file__).resolve().parents[2] / "contracts" / "assessment_treasury.py").read_bytes()
+    recipient_receipt = studio.submit("deploy-fee-recipient", args=[], role="resolver", code=code)
+    assert len(agreeing_validators(recipient_receipt)) >= 2
+    recipient = recipient_receipt["to_address"]
+    studio.submit("unauthorized-treasury-payout", treasury, "payout", ["unauthorized", recipient, 1],
+                  role="insurance", expected_error=True)
+    payout = studio.submit("treasury-owner-payout", treasury, "payout", ["treasury-payout", recipient, 1])
+    studio.drain(payout, "treasury-owner-payout")
+    replay = studio.submit("treasury-payout-identical-replay", treasury, "payout", ["treasury-payout", recipient, 1])
+    assert replay.get("triggered_transactions", []) == []
+    assert studio.read(recipient, "get_totals")["received_atto"] == 1
+    assert studio.read(treasury, "get_totals")["balance_atto"] == totals["balance_atto"] - 1

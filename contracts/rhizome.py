@@ -518,7 +518,7 @@ class Rhizome(gl.Contract):
         self.charged_atto = u256(int(self.charged_atto) + int(gl.message.value))
         batch["status"] = "ASSESSING"
         self.batches[request_id] = canonical(batch)
-        gl.get_contract_at(self.treasury).emit_transfer(value=self.assessment_fee_atto, on="finalized")
+        gl.get_contract_at(self.treasury).emit(value=self.assessment_fee_atto, on="finalized").accept_fee()
         self._history({"event": "PAIR_RESERVED", "request_id": request_id, "operation_id": operation_id, "attempt": count + 1})
         return result
 

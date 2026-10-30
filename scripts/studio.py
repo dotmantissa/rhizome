@@ -49,6 +49,16 @@ def sanitize(value):
     return value
 
 
+def write_json(path, value):
+    """Durably replace an artifact before journaling its completion."""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w") as stream:
+        stream.write(json.dumps(sanitize(value), default=str, indent=2) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
 class Studio:
     def __init__(self, credentials_file=None):
         filename = credentials_file or os.environ["RHIZOME_CREDENTIALS_FILE"]
@@ -106,7 +116,7 @@ class Studio:
             status = receipt.get("status_name")
             if status == "FINALIZED":
                 path = VERIFICATION / "receipts" / (label + ".json")
-                path.write_text(json.dumps(sanitize(receipt), default=str, indent=2) + "\n")
+                write_json(path, receipt)
                 ok = successful(receipt)
                 self.log({"event": "FINALIZED", "operation": label, "tx": tx, "execution_success": ok, "receipt": str(path.relative_to(ROOT))})
                 print(label, "FINALIZED", "success" if ok else "execution error", tx, flush=True)
@@ -168,7 +178,12 @@ class Studio:
         return self.wait(tx, label, expected_error) if wait_for_finality else tx
 
     def read(self, address, method, args=None, role="deployer"):
-        return self.client(role).read_contract(address=address, function_name=method, args=args or [])
+        result = self.client(role).read_contract(address=address, function_name=method, args=args or [])
+        observation = {"address": address, "method": method, "args": args or [], "result": result}
+        directory = VERIFICATION / "observations"
+        directory.mkdir(exist_ok=True)
+        write_json(directory / (method + "-" + digest(observation) + ".json"), observation)
+        return result
 
     def drain(self, receipt, label):
         children = receipt.get("triggered_transactions", [])
@@ -182,11 +197,13 @@ class Studio:
         result = {"network": "studionet", "chain_id": 61999, "rpc": "https://studio.genlayer.com/api",
                   "runner": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
                   "source_commit": source_commit, "contracts": {}, "accounts": {r: a.address for r, a in self.accounts.items()}}
-        for name, role, args in [("rhizome", "deployer", [self.accounts["deployer"].address, 1]),
+        for name, role, args in [("assessment_treasury", "deployer", []),
+                                 ("rhizome", "deployer", None),
                                  ("event_resolver", "resolver", None), ("insurance_gate", "insurance", None)]:
             code = (ROOT / "contracts" / (name + ".py")).read_bytes()
             if args is None:
-                args = [result["contracts"]["rhizome"]["address"]]
+                args = ([result["contracts"]["assessment_treasury"]["address"], 1]
+                        if name == "rhizome" else [result["contracts"]["rhizome"]["address"]])
             receipt = self.submit("deploy-" + name, args=args, role=role, code=code)
             address = receipt.get("to_address", receipt.get("recipient"))
             assert address and address != "0x" + "0" * 40
@@ -195,7 +212,7 @@ class Studio:
             assert len(agreeing_validators(receipt)) >= 2, "deployment did not show two independent validator agreements"
             result["contracts"][name] = {"address": address, "deployment_tx": receipt["hash"], "code_sha256": hashlib.sha256(code).hexdigest(),
                                           "constructor_args": args, "deployer": self.accounts[role].address}
-            (VERIFICATION / "deployment.json").write_text(json.dumps(result, indent=2) + "\n")
+            write_json(VERIFICATION / "deployment.json", result)
         return result
 
 

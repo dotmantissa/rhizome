@@ -78,21 +78,27 @@ def consumers(rhizome, direct_vm, direct_deploy, direct_owner, direct_bob, direc
     harness = MessageHarness(direct_vm)
     harness.attach(rhizome, source_address, source_storage)
     items = []
-    for path, owner in [("contracts/event_resolver.py", direct_bob), ("contracts/insurance_gate.py", direct_charlie)]:
+    treasury_address = None
+    for path, owner in [("contracts/assessment_treasury.py", direct_owner),
+                        ("contracts/event_resolver.py", direct_bob), ("contracts/insurance_gate.py", direct_charlie)]:
         direct_vm._storage = InmemManager()
         import genlayer.gl.genvm_contracts as gc
         gc.__known_contract__ = None
         direct_vm.sender = owner
-        contract = direct_deploy(path, source_address, sdk_version="v0.2.16")
+        contract = direct_deploy(path, *([] if "treasury" in path else [source_address]), sdk_version="v0.2.16")
         addr = address(direct_vm._contract_address)
         harness.attach(contract, addr, direct_vm._storage)
-        items.append((contract, addr, address(owner)))
+        if "treasury" in path:
+            treasury_address = addr
+        else:
+            items.append((contract, addr, address(owner)))
     direct_vm._storage = source_storage
     direct_vm.sender = direct_owner
     from genlayer import Address
     gl.message = gl.MessageType(Address(source_address), Address(address(direct_owner)), Address(address(direct_owner)), gl.message.value, gl.message.chain_id)
     gl.message_raw["contract_address"] = Address(source_address)
     direct_vm._contract_address = Address(source_address)
+    rhizome.treasury = Address(treasury_address)
     return harness, source_address, items
 
 
@@ -125,6 +131,7 @@ def test_both_independent_keys_apply_same_certificate_separate_consequences(rhiz
     assert items[0][2] != items[1][2]
     data = seal_three(rhizome, prepare, assess, direct_vm, items[0][1])
     harness.drain()
+    assert harness.call(rhizome.treasury, direct_owner, "get_totals")["received_atto"] == 3
     for index, (_, addr, owner) in enumerate(items):
         action = "RESOLVED" if index == 0 else "UNDERWRITING_ENABLED"
         lock(harness, addr, owner, data["batch"], 3, action)
