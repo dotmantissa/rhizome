@@ -288,6 +288,8 @@ class Rhizome(gl.Contract):
     delivery_count: u64
     charged_atto: u256
     reservation_operations: TreeMap[str, str]
+    policy_revision_requests: TreeMap[str, str]
+    policy_revision_counts: TreeMap[str, u64]
 
     def __init__(self, treasury_address: str, assessment_fee_atto: int):
         integer(assessment_fee_atto, 1, (1 << 256) - 1)
@@ -470,6 +472,11 @@ class Rhizome(gl.Contract):
             previous["superseded_by"] = request_id
             self.batches[previous_id] = canonical(previous)
         self.request_count = u64(int(self.request_count) + 1)
+        policy_index = self._policy_key(policy_id, envelope["policy_revision"])
+        policy_count = int(self.policy_revision_counts.get(policy_index, u64(0)))
+        require(policy_count < MAX_U64, "policy reverse index overflow")
+        self.policy_revision_requests[policy_index + ":" + str(policy_count)] = request_id
+        self.policy_revision_counts[policy_index] = u64(policy_count + 1)
         for source in locked:
             key = source["source_id"] + ":" + str(source["revision"])
             count = int(self.revision_counts.get(key, u64(0)))
@@ -521,6 +528,7 @@ class Rhizome(gl.Contract):
         _, key, _ = self._pair_key(request_id, left_id, right_id)
         reservation = self._load(self.reservations, key)
         require(reservation["payer"] == str(gl.message.sender_address), "reservation payer only")
+        require(reservation["status"] in ("PENDING", "RELEASED"), "completed reservation cannot be released")
         reservation["status"] = "RELEASED"
         self.reservations[key] = canonical(reservation)
         operation_key = reservation["payer"] + ":" + reservation["operation_id"]
@@ -806,6 +814,15 @@ class Rhizome(gl.Contract):
         count = int(self.revision_counts.get(key, u64(0)))
         end = min(offset + limit, count)
         return {"items": [self.revision_requests[key + ":" + str(i)] for i in range(offset, end)], "next_offset": end, "total": count}
+
+    @gl.public.view
+    def list_policy_requests(self, policy_id: str, revision: int, offset: int, limit: int) -> dict:
+        key = self._policy_key(policy_id, revision)
+        integer(offset, 0, MAX_U64)
+        integer(limit, 1, MAX_HISTORY_PAGE)
+        count = int(self.policy_revision_counts.get(key, u64(0)))
+        end = min(offset + limit, count)
+        return {"items": [self.policy_revision_requests[key + ":" + str(i)] for i in range(offset, end)], "next_offset": end, "total": count}
 
     @gl.public.view
     def get_limits(self) -> dict:
