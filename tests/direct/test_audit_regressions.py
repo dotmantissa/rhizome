@@ -109,7 +109,10 @@ def test_invalid_policy_rejected_before_local_commit(rhizome, prepare, direct_vm
 
 
 @pytest.mark.parametrize('index,action', [(0, 'RESOLVED'), (1, 'UNDERWRITING_ENABLED')])
-def test_invalid_binding_is_correctable_before_any_state_change(rhizome, prepare, assess, direct_vm, direct_owner, consumers, index, action):
+@pytest.mark.parametrize('field', ['request_id', 'owner', 'parties', 'policy_id', 'policy_revision',
+                                 'subject_id', 'subject_digest', 'source_manifest_digest', 'consumer_address',
+                                 'consequence_digest', 'generation', 'deadline', 'batch_digest'])
+def test_invalid_binding_is_correctable_before_any_state_change(rhizome, prepare, assess, direct_vm, direct_owner, consumers, index, action, field):
     harness, source, items = consumers
     contract, consumer, owner = items[index]
     data = seal_three(rhizome, prepare, assess, direct_vm, consumer)
@@ -117,9 +120,14 @@ def test_invalid_binding_is_correctable_before_any_state_change(rhizome, prepare
     harness.call(consumer, owner, 'configure_policy', 'measurements', 1, 3)
     harness.drain()
     correct = {**data['batch']['envelope'], 'batch_digest': data['batch']['batch_digest']}
-    bad = {**correct, 'batch_digest': '0' * 64}
+    replacements = {'request_id': 'unknown-request', 'owner': source, 'parties': [owner],
+                    'policy_id': 'unknown-policy', 'policy_revision': 2, 'subject_id': 'wrong-subject',
+                    'subject_digest': '0' * 64, 'source_manifest_digest': '0' * 64,
+                    'consumer_address': source, 'consequence_digest': '0' * 64,
+                    'generation': 2, 'deadline': correct['deadline'] + 1, 'batch_digest': '0' * 64}
+    bad = {**correct, field: replacements[field]}
     consequence = {'subject_id': 'event-1', 'action': action, 'value': 'eligible'}
-    with direct_vm.expect_revert('binding differs from finalized batch'):
+    with direct_vm.expect_revert():
         harness.call(consumer, owner, 'bind_request', canonical(bad), canonical(consequence))
     with harness.context(consumer, owner):
         assert 'batch-1' not in contract.bindings and 'event-1' not in contract.states
