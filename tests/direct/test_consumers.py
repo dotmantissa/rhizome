@@ -51,6 +51,11 @@ class MessageHarness:
         from genlayer.py import calldata
         if "PostMessage" in request:
             msg = request["PostMessage"]
+            if msg["calldata"].get("method") == "confirm_finalized_record":
+                # The default direct harness treats source writes as finalized.
+                # Pending confirmations are separately exercised in security tests.
+                self.call(msg["address"], gl.message.contract_address, "confirm_finalized_record", *msg["calldata"]["args"])
+                return {"ok": None}
             self.messages.append({**msg, "sender": str(gl.message.contract_address)})
             return {"ok": None}
         if "CallContract" in request:

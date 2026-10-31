@@ -13,6 +13,12 @@ def rhizome(direct_vm, direct_deploy, direct_owner):
     # Direct mode has one snapshot. Explicitly dispatch the finalized self-read;
     # snapshot divergence is separately injected in the recovery regressions.
     def self_view(vm, request):
+        message = request.get("PostMessage")
+        if message and message["calldata"].get("method") == "confirm_finalized_record":
+            from genlayer import gl
+            with vm.prank(gl.message.contract_address):
+                contract.confirm_finalized_record(*message["calldata"]["args"])
+            return {"ok": None}
         call = request.get("CallContract")
         if call and call["calldata"]["method"] == "is_current":
             from genlayer.py import calldata

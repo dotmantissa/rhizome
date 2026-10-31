@@ -6,7 +6,6 @@ counts origins, not correct conclusions. Delivery uses finalized authenticated
 messages. See docs/protocol.md for authority, schemas and integration contracts.
 """
 from genlayer import *
-from genlayer.py.public_abi import StorageType
 import json
 import hashlib
 import re
@@ -293,6 +292,9 @@ class Rhizome(gl.Contract):
     policy_revision_counts: TreeMap[str, u64]
     assessment_payers: TreeMap[str, bool]
     treasury_retries: TreeMap[str, str]
+    finalized_records: TreeMap[str, str]
+    finalized_source_latest: TreeMap[str, u64]
+    finalized_subject_latest: TreeMap[str, str]
 
     def __init__(self, treasury_address: str, assessment_fee_atto: int):
         integer(assessment_fee_atto, 1, (1 << 256) - 1)
@@ -334,9 +336,61 @@ class Rhizome(gl.Contract):
         self.history.append(canonical(event))
 
     def _active(self, batch: dict):
+        self._require_finalized("batch", batch["envelope"]["request_id"], 0)
         require(batch["status"] in ("OPEN", "ASSESSING"), "request terminal")
         require(now_seconds() <= batch["envelope"]["deadline"], "deadline elapsed")
         require(self.is_current(batch["envelope"]["request_id"])["current"], "stale or quarantined request")
+
+    def _finality_key(self, kind: str, record_id: str, revision: int) -> str:
+        identifier(record_id)
+        base = kind.removeprefix("quarantine-")
+        require(base in ("policy", "authority", "source", "batch", "request"), "finality record kind")
+        integer(revision, 1 if base in ("policy", "source") else 0, MAX_U64 if base in ("policy", "source") else 0)
+        return kind + ":" + record_id + (":" + str(revision) if base in ("policy", "source") else "")
+
+    def _require_finalized(self, kind: str, record_id: str, revision: int):
+        require(self._finality_key(kind, record_id, revision) in self.finalized_records, "record finality confirmation pending")
+
+    def _confirm_after_finalization(self, kind: str, record_id: str, revision: int, commitment: str):
+        gl.get_contract_at(gl.message.contract_address).emit(on="finalized").confirm_finalized_record(kind, record_id, revision, commitment)
+
+    @gl.public.write
+    def confirm_finalized_record(self, kind: str, record_id: str, revision: int, commitment: str) -> None:
+        """Authenticated proof that the creating/restricting source write finalized.
+
+        Only original record writes emit confirmations. An identical replay of a
+        tentative record must never masquerade as its finalization. Consumers
+        may read these confirmations in latest state: their emitting parents
+        have already finalized, even while a confirmation itself is accepted.
+        """
+        self._no_value()
+        require(gl.message.sender_address == gl.message.contract_address, "authenticated self confirmation required")
+        hash_value(commitment)
+        key = self._finality_key(kind, record_id, revision)
+        if kind == "policy":
+            record = self._load(self.policies, self._policy_key(record_id, revision))
+            actual = digest(record)
+        elif kind == "authority":
+            actual = digest(self._load(self.authorities, record_id))
+        elif kind == "source":
+            actual = digest(self._load(self.sources, record_id + ":" + str(revision)))
+        elif kind == "batch":
+            record = self._batch(record_id)
+            actual = record["batch_digest"]
+        else:
+            require(kind.startswith("quarantine-") and kind.removeprefix("quarantine-") in ("policy", "source", "request", "authority"), "finality record kind")
+            actual = self.quarantine.get(key.removeprefix("quarantine-"))
+        require(actual == commitment, "finality commitment mismatch")
+        if key in self.finalized_records:
+            require(self.finalized_records[key] == commitment, "conflicting finality confirmation")
+        self.finalized_records[key] = commitment
+        if kind == "source":
+            self.finalized_source_latest[record_id] = u64(max(revision, int(self.finalized_source_latest.get(record_id, u64(0)))))
+        elif kind == "batch":
+            subject_key = self._subject_key(record["envelope"])
+            previous_id = self.finalized_subject_latest.get(subject_key)
+            if previous_id is None or self._batch(previous_id)["envelope"]["generation"] < record["envelope"]["generation"]:
+                self.finalized_subject_latest[subject_key] = record_id
 
     @gl.public.write
     def register_policy(self, policy_id: str, independence_definition: str, required_count: int) -> dict:
@@ -360,6 +414,7 @@ class Rhizome(gl.Contract):
         self.policies[self._policy_key(policy_id, current + 1)] = canonical(result)
         self.policy_latest[policy_id] = u64(current + 1)
         self._history({"event": "POLICY_REGISTERED", "policy_id": policy_id, "revision": current + 1})
+        self._confirm_after_finalization("policy", policy_id, current + 1, digest(result))
         return result
 
     @gl.public.write
@@ -382,6 +437,7 @@ class Rhizome(gl.Contract):
             require(json.loads(self.authorities[authority_id]) == result, "authority immutable; use successor ID")
             return result
         self.authorities[authority_id] = canonical(result)
+        self._confirm_after_finalization("authority", authority_id, 0, digest(result))
         return result
 
     @gl.public.write
@@ -400,6 +456,7 @@ class Rhizome(gl.Contract):
         for origin in origins:
             identifier(origin)
         authority = self._load(self.authorities, source["authority_id"])
+        self._require_finalized("authority", source["authority_id"], 0)
         require(authority["principal"] == str(gl.message.sender_address), "authority principal only")
         require(source["channel"] == authority["channel"] and source["url"].startswith(authority["url_prefix"]), "unapproved source channel")
         key = source["source_id"] + ":" + str(source["revision"])
@@ -414,6 +471,7 @@ class Rhizome(gl.Contract):
         self.sources[key] = canonical(source)
         self.source_latest[source["source_id"]] = u64(source["revision"])
         self._history({"event": "SOURCE_ATTESTED", "source_id": source["source_id"], "revision": source["revision"]})
+        self._confirm_after_finalization("source", source["source_id"], source["revision"], digest(source))
         return source
 
     @gl.public.write
@@ -437,6 +495,7 @@ class Rhizome(gl.Contract):
         integer(envelope["generation"], 1, MAX_U64)
         integer(envelope["deadline"], 1, MAX_U64)
         policy = self._load(self.policies, self._policy_key(policy_id, envelope["policy_revision"]))
+        self._require_finalized("policy", policy_id, envelope["policy_revision"])
         sources = body["sources"]
         require(type(sources) is list and 2 <= len(sources) <= 6, "two through six sources required")
         locked = []
@@ -445,6 +504,7 @@ class Rhizome(gl.Contract):
             identifier(ref["source_id"])
             integer(ref["revision"], 1, MAX_U64)
             locked.append(self._load(self.sources, ref["source_id"] + ":" + str(ref["revision"])))
+            self._require_finalized("source", ref["source_id"], ref["revision"])
         require([s["source_id"] for s in locked] == sorted(set(s["source_id"] for s in locked)), "sorted unique manifest required")
         require(all(s["scope"] == policy["independence_definition"]["scope"] for s in locked), "policy scope mismatch")
         # The digest commits every source AND every disclosed authority record.
@@ -487,6 +547,7 @@ class Rhizome(gl.Contract):
             self.revision_requests[key + ":" + str(count)] = request_id
             self.revision_counts[key] = u64(count + 1)
         self._history({"event": "BATCH_OPENED", "request_id": request_id, "batch_digest": batch_digest})
+        self._confirm_after_finalization("batch", request_id, 0, batch_digest)
         return result
 
     @gl.public.write
@@ -495,6 +556,7 @@ class Rhizome(gl.Contract):
         self._no_value()
         batch = self._batch(request_id)
         require(batch["envelope"]["owner"] == str(gl.message.sender_address), "request owner only")
+        self._require_finalized("batch", request_id, 0)
         require(type(authorized) is bool, "authorization boolean required")
         payer = Address(payer_address)
         require(payer != Address("0x" + "0" * 40), "zero payer")
@@ -673,6 +735,7 @@ class Rhizome(gl.Contract):
     def resolve_unavailable(self, request_id: str) -> dict:
         self._no_value()
         batch = self._batch(request_id)
+        self._require_finalized("batch", request_id, 0)
         if request_id in self.certificates:
             return self.get_certificate(request_id)
         expired = now_seconds() > batch["envelope"]["deadline"]
@@ -688,8 +751,8 @@ class Rhizome(gl.Contract):
         # terminate an otherwise recoverable batch in another transaction.
         invalidated = False
         if not expired and not exhausted and not self.is_current(request_id)["current"]:
-            finalized = gl.get_contract_at(gl.message.contract_address).view(state=StorageType.LATEST_FINAL).is_current(request_id)
-            invalidated = not finalized["current"]
+            finalized = self.is_finalized_current(request_id)
+            invalidated = not finalized["current"] and finalized["reason"] != "FINALITY_PENDING"
         require(expired or exhausted or invalidated, "no unresolved recovery condition")
         return self._terminal(batch, "DEADLINE_ELAPSED" if expired else "RETRY_EXHAUSTED" if exhausted else "EVIDENCE_INVALIDATED")
 
@@ -715,6 +778,7 @@ class Rhizome(gl.Contract):
             require(self.quarantine[key] == reason_digest, "quarantine immutable")
         else:
             self.quarantine[key] = reason_digest
+            self._confirm_after_finalization("quarantine-" + kind, record_id, revision, reason_digest)
         # No clear method: a newer restriction cannot be cleared by an old receipt.
 
     @gl.public.view
@@ -732,6 +796,40 @@ class Rhizome(gl.Contract):
             if "source:" + source["source_id"] + ":" + str(source["revision"]) in self.quarantine or "authority:" + source["authority_id"] in self.quarantine:
                 reason = "QUARANTINED"
         return {"current": not reason, "reason": reason, "generation": envelope["generation"], "superseded_by": batch["superseded_by"], "batch_digest": batch["batch_digest"]}
+
+    @gl.public.view
+    def is_finalized_current(self, request_id: str) -> dict:
+        """Freshness derived exclusively from authenticated finalized parents."""
+        batch = self._batch(request_id)
+        envelope = batch["envelope"]
+        latest_id = self.finalized_subject_latest.get(self._subject_key(envelope))
+        pending = "batch:" + request_id not in self.finalized_records or latest_id is None
+        reason = ""
+        latest_generation = self._batch(latest_id)["envelope"]["generation"] if latest_id is not None else 0
+        pending = pending or latest_generation < envelope["generation"]
+        if latest_id is not None and latest_id != request_id and latest_generation >= envelope["generation"]:
+            reason = "SUBJECT_SUPERSEDED"
+        if "quarantine-request:" + request_id in self.finalized_records or "quarantine-policy:" + self._policy_key(envelope["policy_id"], envelope["policy_revision"]) in self.finalized_records:
+            reason = "QUARANTINED"
+        for source in batch["manifest"]["sources"]:
+            finalized_revision = int(self.finalized_source_latest.get(source["source_id"], u64(0)))
+            pending = pending or finalized_revision < source["revision"]
+            if finalized_revision > source["revision"]:
+                reason = "SOURCE_SUPERSEDED"
+            if "quarantine-source:" + source["source_id"] + ":" + str(source["revision"]) in self.finalized_records or "quarantine-authority:" + source["authority_id"] in self.finalized_records:
+                reason = "QUARANTINED"
+        return {"current": not reason and not pending, "reason": reason or ("FINALITY_PENDING" if pending else ""), "generation": envelope["generation"],
+                "superseded_by": latest_id if latest_id is not None and latest_id != request_id and latest_generation >= envelope["generation"] else "", "batch_digest": batch["batch_digest"]}
+
+    @gl.public.view
+    def get_finalized_policy(self, policy_id: str, revision: int) -> dict:
+        self._require_finalized("policy", policy_id, revision)
+        return self.get_policy(policy_id, revision)
+
+    @gl.public.view
+    def get_finalized_batch(self, request_id: str) -> dict:
+        self._require_finalized("batch", request_id, 0)
+        return self.get_batch(request_id)
 
     @gl.public.write
     def register_consumer(self, policy_id: str, revision: int, minimum_count: int, unresolved_consequence: str) -> dict:

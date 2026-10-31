@@ -75,22 +75,27 @@ def test_sponsor_cannot_spend_another_requests_retry_budget(rhizome, prepare, di
 
 
 def test_tentative_restriction_cannot_permanently_terminate_batch(rhizome, prepare, direct_vm):
-    from genlayer.py import calldata
+    from genlayer import gl
     from tests.evidence import digest
     prepare()
-    final_current = rhizome.is_current('batch-1')
+    original = direct_vm._gl_call_hook
+    messages = []
+    def pending(vm, request):
+        message = request.get('PostMessage')
+        if message and message['calldata'].get('method') == 'confirm_finalized_record':
+            assert message['on'] == 'finalized'
+            messages.append(message)
+            return {'ok': None}
+        return original(vm, request)
+    direct_vm._gl_call_hook = pending
     rhizome.quarantine_record('request', 'batch-1', 0, digest('tentative-probe'))
-    def snapshot(vm, request):
-        call = request.get('CallContract')
-        if call:
-            assert call['state'] == 1 and call['calldata']['method'] == 'is_current'
-            return b'\x00' + calldata.encode(final_current)
-        return None
-    direct_vm._gl_call_hook = snapshot
+    assert not rhizome.is_current('batch-1')['current'] and rhizome.is_finalized_current('batch-1')['current']
     with direct_vm.expect_revert('no unresolved recovery condition'):
         rhizome.resolve_unavailable('batch-1')
     assert rhizome.get_batch('batch-1')['status'] == 'OPEN'
-    final_current = rhizome.is_current('batch-1')
+    direct_vm._gl_call_hook = original
+    with direct_vm.prank(gl.message.contract_address):
+        rhizome.confirm_finalized_record(*messages[0]['calldata']['args'])
     assert rhizome.resolve_unavailable('batch-1')['sealed_result']['unresolved_reason'] == 'EVIDENCE_INVALIDATED'
 
 
@@ -145,9 +150,9 @@ def tentative_restriction(vm, harness):
     def override(context, request):
         call = request.get('CallContract')
         result = original(context, request)
-        if call and call['calldata']['method'] == 'is_current':
-            states.append(call['state'])
-            if call['state'] == 2:
+        if call and call['calldata']['method'] in ('is_current', 'is_finalized_current'):
+            states.append(call['calldata']['method'])
+            if call['calldata']['method'] == 'is_current':
                 from genlayer.py import calldata
                 result = b'\x00' + calldata.encode({**calldata.decode(result[1:]), 'current': False, 'reason': 'QUARANTINED'})
         return result
@@ -167,7 +172,7 @@ def test_tentative_restriction_refresh_does_not_destroy_finalized_permission(rhi
     original, states = tentative_restriction(direct_vm, harness)
     refreshed = harness.call(consumer, owner, 'refresh_subject', 'event-1')
     assert not refreshed['permitted'] and refreshed['status'] == 'CERTIFIED'
-    assert states == [2, 1]
+    assert states == ['is_current', 'is_finalized_current']
     direct_vm._gl_call_hook = original
     assert harness.call(consumer, owner, 'get_subject', 'event-1')['permitted']
     assert harness.call(consumer, owner, 'apply_action', 'event-1', 'post-appeal-action')['action'] == action
@@ -184,7 +189,7 @@ def test_deferred_delivery_retries_same_operation_after_tentative_restriction(rh
     message = harness.messages.pop()
     original, states = tentative_restriction(direct_vm, harness)
     result = harness.call(consumer, source, 'receive_certificate', message['calldata']['args'][0])
-    assert result['outcome'] == 'DEFERRED' and not harness.messages and states == [2, 1]
+    assert result['outcome'] == 'DEFERRED' and not harness.messages and states == ['is_current', 'is_finalized_current']
     direct_vm._gl_call_hook = original
     assert rhizome.get_delivery(consumer, 'deferred-delivery')['acknowledgement'] is None
     harness.call(source, direct_owner, 'publish_to', 'batch-1', consumer, 'deferred-delivery')
