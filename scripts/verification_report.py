@@ -30,7 +30,12 @@ EXPECTED_TESTS = {
         "test_08_source_revision_and_quarantine_at_action_time",
         "test_09_treasury_accounting_and_owner_payout",
     )
-} | {"tests/integration/test_source_changes.py::test_changed_public_bytes_cannot_certify_origins"}
+} | {"tests/integration/test_source_changes.py::test_changed_public_bytes_cannot_certify_origins",
+     "tests/integration/test_audit_security.py::test_10_authorized_payer_revocation_and_owner_recovery",
+     "tests/integration/test_audit_security.py::test_11_invalid_consumer_inputs_do_not_poison_configuration",
+     "tests/integration/test_recovery.py::test_12_failed_fee_refunds_forward_once_to_fixed_treasury",
+     "tests/integration/test_recovery.py::test_13_tentative_restriction_preserves_permission_and_delivery_retries[resolver-RESOLVED]",
+     "tests/integration/test_recovery.py::test_13_tentative_restriction_preserves_permission_and_delivery_retries[insurance-UNDERWRITING_ENABLED]"}
 
 
 def leader(receipt):
@@ -95,7 +100,12 @@ def report(partial=False):
     receipts = {path.stem: json.loads(path.read_text()) for path in (VERIFICATION / "receipts").glob("*.json")}
     by_hash = {receipt["hash"]: receipt for receipt in receipts.values()}
     expected_refusals = {"action-resolver-refused", "action-insurance-refused", "forged-eoa-callback",
-                         "stale-source-action", "integer-bound-policy", "unauthorized-treasury-payout"}
+                         "stale-source-action", "integer-bound-policy", "unauthorized-treasury-payout",
+                         "audit-unauthorized-reservation", "audit-revoked-assessment",
+                         "audit-unauthorized-reservation-2", "audit-unauthorized-reservation-3",
+                         "audit-invalid-consumer-policy", "audit-invalid-consumer-binding",
+                         "audit-invalid-resolver-policy", "audit-invalid-resolver-binding",
+                         "refund-fee-failure", "refund-retry-fee-failure"}
     for name, contract in deployment["contracts"].items():
         receipt = receipts["deploy-" + name]
         assert receipt["hash"] == contract["deployment_tx"] and successful(receipt), name
@@ -113,7 +123,11 @@ def report(partial=False):
                 child_hash = child if isinstance(child, str) else child.get("hash", child.get("tx_id"))
                 assert child_hash in by_hash, name + ": finalized child receipt missing"
                 child_receipt = by_hash[child_hash]
-                assert child_receipt["triggered_by"] == receipt["hash"] and child_receipt["triggered_on"] == "finalized", name + ": finalized emission provenance differs"
+                probe = name in ("recovery-restrict-resolver", "recovery-restrict-insurance")
+                expected_on = "accepted" if probe else "finalized"
+                assert child_receipt["triggered_by"] == receipt["hash"] and child_receipt["triggered_on"] == expected_on, name + ": emission provenance differs"
+                if probe:
+                    assert receipt["to_address"] == receipts["deploy-restriction-source"]["to_address"], "accepted probes must come from the controlled fixture"
                 assert child_receipt["from_address"] == receipt["to_address"], name + ": child sender differs from emitting contract"
         protocol_refused = receipt.get("result_name") not in (None, "MAJORITY_AGREE")
         if protocol_refused:
@@ -235,7 +249,11 @@ def report(partial=False):
             request_id = certificate["request_id"]
             body = json.loads((VERIFICATION / "requests" / (request_id + ".json")).read_text())
             assert all(certificate[key] == value for key, value in body["envelope"].items()), operation
-            assert certificate["source_contract"] == deployment["contracts"]["rhizome"]["address"], operation
+            assert certificate["source_contract"] == intent["address"], operation
+            allowed_sources = {deployment["contracts"]["rhizome"]["address"]}
+            if "deploy-restriction-source" in receipts:
+                allowed_sources.add(receipts["deploy-restriction-source"]["to_address"])
+            assert certificate["source_contract"] in allowed_sources, operation
             assert certificate["certificate_digest"] == digest({key: value for key, value in certificate.items() if key != "certificate_digest"}), operation
             ids = sorted(source["source_id"] for source in body["sources"])
             matrix = certificate["relation_matrix"]
@@ -269,7 +287,11 @@ def report(partial=False):
             assert action["subject_id"] == intent["args"][0] and action["operation_id"] == intent["args"][1], operation
             consumer_name = "event_resolver" if action["action"] == "RESOLVED" else "insurance_gate"
             assert action["action"] in ("RESOLVED", "UNDERWRITING_ENABLED"), operation
-            assert intent["address"] == deployment["contracts"][consumer_name]["address"], operation
+            allowed_consumers = {deployment["contracts"][consumer_name]["address"]}
+            recovery_deploy = "deploy-recovery-resolver" if consumer_name == "event_resolver" else "deploy-recovery-insurance"
+            if recovery_deploy in receipts:
+                allowed_consumers.add(receipts[recovery_deploy]["to_address"])
+            assert intent["address"] in allowed_consumers, operation
             assert intent["sender"] == deployment["contracts"][consumer_name]["deployer"], operation
             actions.append({"transaction": receipt["hash"], "consumer": consumer_name, **action})
     verified_payouts = []
@@ -299,6 +321,56 @@ def report(partial=False):
                                 "replay_transaction": replay["hash"], **record})
     reservations = [payload for operation, payload in intents.items()
                     if payload["method"] == "reserve_pair" and operation in receipts and successful(receipts[operation])]
+    recoveries = []
+    if not partial:
+        refund_source = receipts["deploy-refund-rhizome"]["to_address"]
+        refund_treasury = receipts["deploy-rejecting-treasury"]["to_address"]
+        assert intents["deploy-refund-rhizome"]["code_sha256"] == deployment["contracts"]["rhizome"]["code_sha256"], "refund probe must execute exact production source"
+        assert intents["deploy-refund-rhizome"]["args"] == [refund_treasury, 1]
+        assert intents["deploy-rejecting-treasury"]["code_sha256"] == hashlib.sha256((ROOT / "tests/contracts/rejecting_treasury.py").read_bytes()).hexdigest()
+        for operation, parent in (("refund-fee-failure", "refund-reservation"),
+                                  ("refund-retry-fee-failure", "refund-retry-refused")):
+            failure = receipts[operation]
+            assert not successful(failure) and failure["triggered_by"] == receipts[parent]["hash"]
+            assert failure["from_address"] == refund_source and failure["to_address"] == refund_treasury and int(failure["value"]) == 1
+        recovered = receipts["refund-retry-success"]
+        replay = receipts["refund-retry-replay"]
+        record = json.loads(leader(recovered)["result"]["payload"]["readable"])
+        assert successful(recovered) and successful(replay) and record["treasury"] == refund_treasury
+        assert record["amount_atto"] == 1 and record["status"] == "EMITTED_ON_FINALIZED"
+        assert json.loads(leader(replay)["result"]["payload"]["readable"]) == record and replay.get("triggered_transactions", []) == []
+        assert len(recovered["triggered_transactions"]) == 1
+        child_hash = recovered["triggered_transactions"][0]
+        child_hash = child_hash if isinstance(child_hash, str) else child_hash.get("hash", child_hash.get("tx_id"))
+        child = by_hash[child_hash]
+        assert successful(child) and child["from_address"] == refund_source and child["to_address"] == refund_treasury and int(child["value"]) == 1
+        recoveries.append({"kind": "failed_fee_refund_and_retry", "source": refund_source, "treasury": refund_treasury,
+                           "failure": receipts["refund-fee-failure"]["hash"], "retry_failure": receipts["refund-retry-fee-failure"]["hash"],
+                           "recovery": recovered["hash"], "payment_child": child_hash, "replay": replay["hash"]})
+        probe_source = receipts["deploy-restriction-source"]["to_address"]
+        assert intents["deploy-restriction-source"]["code_sha256"] == hashlib.sha256((VERIFICATION / "recovery-probe-source.py").read_bytes()).hexdigest()
+        for role, contract_name in (("resolver", "event_resolver"), ("insurance", "insurance_gate")):
+            deploy = "deploy-recovery-" + role
+            assert intents[deploy]["code_sha256"] == deployment["contracts"][contract_name]["code_sha256"]
+            assert intents[deploy]["args"] == [probe_source]
+            restricted = receipts["recovery-restrict-" + role]
+            assert restricted["to_address"] == probe_source and len(restricted["triggered_transactions"]) == 2
+            children = [receipts["recovery-restrict-" + role + "-child-" + str(n)] for n in range(2)]
+            values = [json.loads(leader(receipt)["result"]["payload"]["readable"]) for receipt in children]
+            deferred = next(value for value in values if "outcome" in value)
+            refresh = next(value for value in values if "status" in value)
+            assert deferred["outcome"] == "DEFERRED" and refresh["status"] == "CERTIFIED" and refresh["permitted"] is False
+            assert all(receipt["triggered_on"] == "accepted" and receipt["triggered_by"] == restricted["hash"] for receipt in children)
+            assert all(receipt["to_address"] == receipts[deploy]["to_address"] for receipt in children)
+            assert successful(receipts["recovery-restore-" + role])
+            published = receipts["publish-recovery-deferred-" + role]
+            delivered = receipts["publish-recovery-deferred-" + role + "-child-0"]
+            assert successful(published) and json.loads(leader(delivered)["result"]["payload"]["readable"])["outcome"] == "APPLIED"
+            assert successful(receipts["recovery-action-" + role])
+            recoveries.append({"kind": "controlled_tentative_restriction_restoration", "consumer": role,
+                               "restriction": restricted["hash"], "accepted_children": [receipt["hash"] for receipt in children],
+                               "restore": receipts["recovery-restore-" + role]["hash"], "retry": published["hash"],
+                               "action": receipts["recovery-action-" + role]["hash"], "production_appeal_proof": False})
     catalog_path = VERIFICATION / "public-evidence.json"
     catalog = json.loads(catalog_path.read_text())["catalog"] if catalog_path.exists() else {}
     tree = ast.parse((ROOT / "contracts" / "rhizome.py").read_text())
@@ -344,6 +416,7 @@ def report(partial=False):
                "finalized_protocol_refusals": protocol_refusals,
                "paid_assessment_reservations": len(reservations), "native_assessment_charges_atto": sum(value["value"] for value in reservations),
                "verified_treasury_payouts": verified_payouts,
+               "verified_hosted_recoveries": recoveries,
                "model_assessments_with_available_evidence": sum(item["decision"]["available"] for item in assessments),
                "retrieval_only_assessments": sum(not item["decision"]["available"] for item in assessments),
                "verified_certificates": certificates, "verified_consumer_actions": actions,

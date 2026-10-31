@@ -266,6 +266,8 @@ def test_08_source_revision_and_quarantine_at_action_time(live):
     studio.submit("quarantine-alpha", source, "quarantine_record", ["source", "alpha", 1, digest("synthetic revocation probe")])
     studio.submit("refresh-resolver-subject", resolver, "refresh_subject", ["event-permitted"], role="resolver")
     assert not studio.read(resolver, "get_subject", ["event-permitted"])["permitted"]
+    invalidated = studio.submit("resolve-finalized-superseded-request", source, "resolve_unavailable", ["insurance-event-gen1"])
+    assert finalized_result(invalidated)["sealed_result"]["unresolved_reason"] == "EVIDENCE_INVALIDATED"
     studio.submit("integer-bound-policy", source, "register_policy", ["invalid-count", canonical(DEFINITION), 7], expected_error=True)
 
 

@@ -7,6 +7,13 @@ import requests
 from scripts import studio as module
 
 
+def test_credentials_are_redacted_in_nested_named_fields():
+    value = {"accounts": {"deployer_private_key": "synthetic-key", "github_token": "synthetic-token"},
+             "public": "address", "rows": [{"api_key": "synthetic-api", "service_password": "synthetic-password"}]}
+    assert module.sanitize(value) == {"accounts": {"deployer_private_key": "REDACTED", "github_token": "REDACTED"},
+                                       "public": "address", "rows": [{"api_key": "REDACTED", "service_password": "REDACTED"}]}
+
+
 @pytest.fixture
 def transport(monkeypatch, tmp_path):
     sleeps, calls = [], []
