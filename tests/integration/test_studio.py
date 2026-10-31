@@ -12,7 +12,7 @@ from pathlib import Path
 import time
 import pytest
 import requests
-from scripts.studio import Studio, VERIFICATION, agreeing_validators, successful, finalized_result
+from scripts.studio import Studio, ProtocolFailure, VERIFICATION, agreeing_validators, successful, finalized_result
 from tests.evidence import canonical, digest, source_packet, record, DEFINITION
 
 pytestmark = pytest.mark.integration
@@ -164,9 +164,30 @@ def test_04_unknown_ownership_retry_exhaustion_refuses_insurance(live):
     studio, source, _, insurance, _ = live
     batch = open_request(live, "insurance-unresolved", ["alpha", "unknown"], "insurance-independence", insurance)
     configure_and_bind(live, batch, insurance, "insurance", 2, "UNDERWRITING_ENABLED")
+    semantic_unknowns = 0
     for attempt in range(1, 4):
-        decision, _ = assess(live, "insurance-unresolved", "alpha", "unknown", attempt)
+        try:
+            decision, _ = assess(live, "insurance-unresolved", "alpha", "unknown", attempt)
+        except ProtocolFailure as failure:
+            assert failure.receipt["status_name"] == "FINALIZED"
+            assert failure.receipt["result_name"] in ("MAJORITY_DISAGREE", "NO_MAJORITY")
+            release_label = "release-insurance-unresolved-" + str(attempt)
+            if any(row.get("event") == "FINALIZED" and row.get("operation") == release_label for row in studio.records):
+                studio.submit(release_label, source, "release_pair", ["insurance-unresolved", "alpha", "unknown"])
+                continue
+            held = studio.read(source, "get_pair", ["insurance-unresolved", "alpha", "unknown"])
+            assert held["attempts"] == attempt
+            assert held["reservation"]["status"] in ("PENDING", "RELEASED")
+            assert held["reservation"]["operation_id"] == "insurance-unresolved-alpha-unknown-" + str(attempt)
+            studio.submit(release_label, source, "release_pair", ["insurance-unresolved", "alpha", "unknown"])
+            released = studio.read(source, "get_pair", ["insurance-unresolved", "alpha", "unknown"])
+            assert released["reservation"]["status"] == "RELEASED" and released["attempts"] == attempt
+            continue
         assert decision["relation"] == "UNKNOWN", decision
+        assert decision["available"] and not decision["control_verified"], decision
+        assert {"UNKNOWN_CONTROL", "UNKNOWN_ANCESTRY"} <= set(decision["rule_ids"]), decision
+        semantic_unknowns += 1
+    assert semantic_unknowns >= 1, "retrieved semantic unknown evidence required; outages alone do not qualify"
     studio.submit("resolve-insurance-unresolved", source, "resolve_unavailable", ["insurance-unresolved"])
     certificate = studio.read(source, "get_certificate", ["insurance-unresolved"])["sealed_result"]
     assert certificate["unresolved_reason"] == "RETRY_EXHAUSTED" and certificate["certified_origin_count"] == 0

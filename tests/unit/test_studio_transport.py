@@ -127,3 +127,38 @@ def test_retry_after_date_and_malformed_header(monkeypatch):
     assert module.retry_delay(refused) == 5
     refused.headers["Retry-After"] = "synthetic invalid header"
     assert module.retry_delay(refused) == 60
+
+
+def test_undetermined_observation_can_finalize_without_a_new_write(transport, monkeypatch, tmp_path):
+    instance, _, _, sleeps = transport
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "VERIFICATION", tmp_path)
+    (tmp_path / "receipts").mkdir()
+    undecided = {"hash": "synthetic-tx", "status_name": "UNDETERMINED"}
+    finalized = {"hash": "synthetic-tx", "status_name": "FINALIZED", "consensus_data": {
+        "leader_receipt": [{"mode": "leader", "execution_result": "SUCCESS"}]}}
+    responses = iter([undecided, undecided, finalized])
+    polled = []
+
+    def get_transaction(tx):
+        polled.append(tx)
+        return next(responses)
+
+    instance.client = lambda: SimpleNamespace(get_transaction=get_transaction)
+    assert instance.wait("synthetic-tx", "synthetic-recovery") == finalized
+    assert polled == ["synthetic-tx"] * 3 and sleeps == [3, 3]
+    assert [row["event"] for row in instance.records] == ["UNDECIDED", "FINALIZED"]
+    import json
+    assert json.loads((tmp_path / "protocol-observations" / "synthetic-recovery-undetermined.json").read_text()) == undecided
+
+
+@pytest.mark.parametrize("result_name", ["MAJORITY_DISAGREE", "NO_MAJORITY"])
+def test_finalized_leader_success_does_not_override_consensus_refusal(result_name):
+    receipt = {"hash": "synthetic-tx", "status_name": "FINALIZED", "result_name": result_name,
+               "consensus_data": {"leader_receipt": [{"mode": "leader", "execution_result": "SUCCESS"}]}}
+    assert not module.successful(receipt)
+    with pytest.raises(module.ProtocolFailure) as refusal:
+        module.check_outcome(receipt, "synthetic-refused", expected_error=True)
+    assert refusal.value.receipt is receipt
+    with pytest.raises(AssertionError, match="successful finality"):
+        module.finalized_result(receipt)

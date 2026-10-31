@@ -33,8 +33,23 @@ def digest(value):
 
 
 def successful(receipt):
+    if receipt.get("result_name") not in (None, "MAJORITY_AGREE"):
+        return False
     leaders = receipt.get("consensus_data", {}).get("leader_receipt", []) or []
     return any(l.get("execution_result") == "SUCCESS" or l.get("result", {}).get("status") == "return" for l in leaders if l.get("mode", "leader") == "leader")
+
+
+class ProtocolFailure(RuntimeError):
+    """Finalized consensus refusal; the leader's state changes were not applied."""
+    def __init__(self, label, receipt):
+        self.receipt = receipt
+        super().__init__(label + ": finalized protocol refusal " + str(receipt.get("result_name")))
+
+
+def check_outcome(receipt, label, expected_error=False):
+    if receipt.get("result_name") not in (None, "MAJORITY_AGREE"):
+        raise ProtocolFailure(label, receipt)
+    assert successful(receipt) != expected_error, label + ": execution outcome differs from expected outcome"
 
 
 def agreeing_validators(receipt):
@@ -160,9 +175,10 @@ class Studio:
         if finalized:
             saved = json.loads((ROOT / finalized[-1]["receipt"]).read_text())
             assert saved["hash"] == tx and saved["status_name"] == "FINALIZED", "invalid saved finality receipt"
-            assert successful(saved) != expected_error, "saved execution outcome differs from expected outcome"
+            check_outcome(saved, label, expected_error)
             return saved
         c = self.client()
+        observed_undetermined = False
         for _ in range(240):
             receipt = c.get_transaction(tx)
             status = receipt.get("status_name")
@@ -172,12 +188,18 @@ class Studio:
                 ok = successful(receipt)
                 self.log({"event": "FINALIZED", "operation": label, "tx": tx, "execution_success": ok, "receipt": str(path.relative_to(ROOT))})
                 print(label, "FINALIZED", "success" if ok else "execution error", tx, flush=True)
-                if expected_error:
-                    assert not ok, label + ": expected an execution refusal"
-                else:
-                    assert ok, label + ": finalized execution failed; inspect " + str(path)
+                check_outcome(receipt, label, expected_error)
                 return receipt
-            if status in ("UNDETERMINED", "CANCELED"):
+            if status == "UNDETERMINED" and not observed_undetermined:
+                directory = VERIFICATION / "protocol-observations"
+                directory.mkdir(exist_ok=True)
+                path = directory / (label + "-undetermined.json")
+                write_json(path, receipt)
+                self.log({"event": "UNDECIDED", "operation": label, "tx": tx, "status": status,
+                          "receipt": str(path.relative_to(ROOT))})
+                print(label, "UNDETERMINED; continuing to poll the same transaction", tx, flush=True)
+                observed_undetermined = True
+            if status == "CANCELED":
                 self.log({"event": "UNDECIDED", "operation": label, "tx": tx, "status": status})
                 raise RuntimeError(label + ": no protocol finality; inspect transaction " + tx)
             time.sleep(3)
@@ -196,7 +218,8 @@ class Studio:
         finalized = [r for r in old if r["event"] == "FINALIZED"]
         if finalized:
             saved = json.loads((ROOT / finalized[-1]["receipt"]).read_text())
-            assert successful(saved) != expected_error, "saved execution outcome differs from expected outcome"
+            assert saved["hash"] == finalized[-1]["tx"] and saved["status_name"] == "FINALIZED", "invalid saved finality receipt"
+            check_outcome(saved, label, expected_error)
             return saved if wait_for_finality else saved["hash"]
         submitted = [r for r in old if r["event"] == "SUBMITTED"]
         if submitted:
