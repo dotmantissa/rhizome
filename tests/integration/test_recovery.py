@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from scripts.studio import VERIFICATION, agreeing_validators, finalized_result, write_json
 from tests.evidence import DEFINITION, canonical, digest
-from tests.integration.test_studio import live, open_request, assess, configure_and_bind, deliver
+from tests.integration.test_studio import live, open_request, assess_pairs, configure_and_bind, deliver
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
@@ -132,8 +132,7 @@ def recovery_live(live):
     batch = open_request(probe, "tentative-recovery", ["delta", "epsilon", "zeta"], "recovery-independence", resolver)
     for consumer, role, action in [(resolver, "resolver", "RESOLVED"), (insurance, "insurance", "UNDERWRITING_ENABLED")]:
         configure_and_bind(probe, batch, consumer, role, 3, action)
-    for left, right in [("delta", "epsilon"), ("delta", "zeta"), ("epsilon", "zeta")]:
-        decision, _ = assess(probe, "tentative-recovery", left, right)
+    for decision, _ in assess_pairs(probe, "tentative-recovery", [("delta", "epsilon"), ("delta", "zeta"), ("epsilon", "zeta")]):
         assert decision["relation"] == "INDEPENDENT"
     studio.submit("seal-tentative-recovery", source, "seal_batch", ["tentative-recovery"])
     for consumer, role in [(resolver, "resolver"), (insurance, "insurance")]:

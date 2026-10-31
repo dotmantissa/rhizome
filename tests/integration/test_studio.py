@@ -92,6 +92,34 @@ def assess(live, request_id, left, right, attempt=1):
     return decision, receipt
 
 
+def assess_pairs(live, request_id, pairs):
+    """Batch independent pairs; verify every reservation, fee child and decision."""
+    studio, source, _, _, _ = live
+    pairs = list(pairs)
+    assert 1 <= len(pairs) <= 15
+    pending = []
+    for left, right in pairs:
+        label = request_id + "-" + left + "-" + right + "-1"
+        tx = studio.submit("reserve-" + label, source, "reserve_pair", [request_id, left, right, label],
+                           value=1, wait_for_finality=False)
+        pending.append(("reserve-" + label, tx))
+    for label, tx in pending:
+        studio.drain(studio.wait(tx, label), label)
+    pending = []
+    for left, right in pairs:
+        label = "assess-" + request_id + "-" + left + "-" + right + "-1"
+        tx = studio.submit(label, source, "assess_pair", [request_id, left, right], wait_for_finality=False)
+        pending.append((label, tx, left, right))
+    results = []
+    for label, tx, left, right in pending:
+        receipt = studio.wait(tx, label)
+        assert len(agreeing_validators(receipt)) >= 2
+        decision = finalized_result(receipt)
+        assert decision["pair_ids"] == sorted([left, right])
+        results.append((decision, receipt))
+    return results
+
+
 def configure_and_bind(live, batch, consumer, role, minimum, action):
     studio, _, _, _, _ = live
     env = batch["envelope"]
@@ -121,8 +149,7 @@ def test_01_three_independent_measurements_and_shared_infrastructure(live):
     batch = open_request(live, "event-permitted", ["alpha", "beta", "gamma"], "event-independence", resolver)
     for consumer, role, action in [(resolver, "resolver", "RESOLVED"), (insurance, "insurance", "UNDERWRITING_ENABLED")]:
         configure_and_bind(live, batch, consumer, role, 3, action)
-    for a, b in [("alpha", "beta"), ("alpha", "gamma"), ("beta", "gamma")]:
-        decision, receipt = assess(live, "event-permitted", a, b)
+    for decision, receipt in assess_pairs(live, "event-permitted", [("alpha", "beta"), ("alpha", "gamma"), ("beta", "gamma")]):
         assert decision["relation"] == "INDEPENDENT", decision
         assert len(decision["witnesses"]) == 4
     studio.submit("seal-event-permitted", source, "seal_batch", ["event-permitted"])
@@ -214,23 +241,7 @@ def test_06_complete_six_source_matrix(live):
     open_request(live, "six-independent", names, "event-independence", resolver)
     import itertools
     pairs = list(itertools.combinations(names, 2))
-    pending = []
-    for left, right in pairs:
-        label = "six-independent-" + left + "-" + right + "-1"
-        tx = studio.submit("reserve-" + label, source, "reserve_pair", ["six-independent", left, right, label], value=1, wait_for_finality=False)
-        pending.append(("reserve-" + label, tx))
-    for label, tx in pending:
-        studio.drain(studio.wait(tx, label), label)
-    pending = []
-    for left, right in pairs:
-        label = "assess-six-independent-" + left + "-" + right + "-1"
-        tx = studio.submit(label, source, "assess_pair", ["six-independent", left, right], wait_for_finality=False)
-        pending.append((label, tx, left, right))
-    for label, tx, left, right in pending:
-        receipt = studio.wait(tx, label)
-        assert len(agreeing_validators(receipt)) >= 2
-        decision = finalized_result(receipt)
-        assert decision["pair_ids"] == sorted([left, right])
+    for decision, _ in assess_pairs(live, "six-independent", pairs):
         assert decision["relation"] == "INDEPENDENT", decision
     studio.submit("seal-six-independent", source, "seal_batch", ["six-independent"])
     certificate = studio.read(source, "get_certificate", ["six-independent"])["sealed_result"]

@@ -6,7 +6,7 @@ fresh verification namespace alongside the original hosted scenarios.
 import pytest
 from scripts.studio import agreeing_validators, finalized_result
 from tests.evidence import canonical, DEFINITION
-from tests.integration.test_studio import live, open_request, configure_and_bind, assess, deliver
+from tests.integration.test_studio import live, open_request, configure_and_bind, assess, assess_pairs, deliver
 
 pytestmark = pytest.mark.integration
 
@@ -66,8 +66,7 @@ def test_11_invalid_consumer_inputs_do_not_poison_configuration(live):
     configure_and_bind(live, batch, insurance, 'insurance', 4, 'UNDERWRITING_ENABLED')
     configure_and_bind(live, batch, resolver, 'resolver', 4, 'RESOLVED')
     import itertools
-    for a, b in itertools.combinations(['delta', 'epsilon', 'gamma', 'zeta'], 2):
-        decision, receipt = assess(live, 'audit-binding', a, b)
+    for decision, receipt in assess_pairs(live, 'audit-binding', itertools.combinations(['delta', 'epsilon', 'gamma', 'zeta'], 2)):
         assert decision['relation'] == 'INDEPENDENT' and len(agreeing_validators(receipt)) >= 2
     studio.submit('seal-audit-binding', source, 'seal_batch', ['audit-binding'])
     assert deliver(live, 'audit-binding', insurance, 'audit-corrected-binding')['outcome'] == 'APPLIED'
