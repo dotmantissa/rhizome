@@ -98,13 +98,17 @@ class Studio:
                             if attempt == 3:
                                 response.raise_for_status()
                             self.log({"event": "RATE_LIMITED", "operation": self.current_operation,
-                                      "method": method, "attempt": attempt + 1})
+                                      "method": method, "attempt": attempt + 1,
+                                      "http_status": response.status_code,
+                                      "retry_after": response.headers.get("Retry-After"),
+                                      "rate_limit_remaining": response.headers.get("X-RateLimit-Remaining"),
+                                      "rate_limit_reset": response.headers.get("X-RateLimit-Reset")})
                             print("RPC rate limited; retrying the same request after 60 seconds", flush=True)
                             time.sleep(60)
                             continue
                         response.raise_for_status()
                         result = response.json()
-                        if result.get("error", {}).get("code") == -32429 and attempt < 3:
+                        if (result.get("error") or {}).get("code") == -32429 and attempt < 3:
                             self.log({"event": "RATE_LIMITED", "operation": self.current_operation,
                                       "method": method, "attempt": attempt + 1})
                             print("RPC rate limited; retrying the same request after 60 seconds", flush=True)
@@ -124,6 +128,13 @@ class Studio:
         return self.clients[role]
 
     def wait(self, tx, label, expected_error=False):
+        finalized = [row for row in self.records if row["event"] == "FINALIZED"
+                     and row.get("operation") == label and row.get("tx") == tx]
+        if finalized:
+            saved = json.loads((ROOT / finalized[-1]["receipt"]).read_text())
+            assert saved["hash"] == tx and saved["status_name"] == "FINALIZED", "invalid saved finality receipt"
+            assert successful(saved) != expected_error, "saved execution outcome differs from expected outcome"
+            return saved
         c = self.client()
         for _ in range(240):
             receipt = c.get_transaction(tx)

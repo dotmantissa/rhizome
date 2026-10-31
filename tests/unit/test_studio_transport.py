@@ -80,3 +80,17 @@ def test_rate_limit_retries_are_bounded(transport):
         run([response(429) for _ in range(4)])
     assert len(calls) == 4 and sleeps == [60, 60, 60]
     assert all(row["event"] == "RATE_LIMITED" for row in instance.records)
+
+
+def test_finalized_receipt_recovery_needs_no_rpc_and_checks_execution(transport, monkeypatch, tmp_path):
+    instance, _, _, _ = transport
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    receipt = {"hash": "synthetic-tx", "status_name": "FINALIZED", "consensus_data": {
+        "leader_receipt": [{"mode": "leader", "execution_result": "SUCCESS"}]}}
+    module.write_json(tmp_path / "receipt.json", receipt)
+    instance.records.append({"event": "FINALIZED", "operation": "synthetic-finalized",
+                             "tx": "synthetic-tx", "receipt": "receipt.json"})
+    instance.client = lambda: pytest.fail("finalized recovery must not request RPC")
+    assert instance.wait("synthetic-tx", "synthetic-finalized") == receipt
+    with pytest.raises(AssertionError, match="execution outcome"):
+        instance.wait("synthetic-tx", "synthetic-finalized", expected_error=True)
