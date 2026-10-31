@@ -109,3 +109,21 @@ def test_return_value_requires_successful_finality(status, execution, valid):
     else:
         with pytest.raises(AssertionError, match="successful finality"):
             module.finalized_result(receipt)
+
+
+def test_server_reset_delay_is_respected_for_identical_write(transport):
+    instance, run, calls, sleeps = transport
+    refused = response(429)
+    refused.headers["Retry-After"] = "4"
+    run([refused, response()])
+    assert calls[0] == calls[1] and sleeps == [5]
+    assert instance.records[0]["retry_delay_seconds"] == 5
+
+
+def test_retry_after_date_and_malformed_header(monkeypatch):
+    monkeypatch.setattr(module.time, "time", lambda: 1000)
+    refused = response(429)
+    refused.headers["Retry-After"] = "Thu, 01 Jan 1970 00:16:44 GMT"
+    assert module.retry_delay(refused) == 5
+    refused.headers["Retry-After"] = "synthetic invalid header"
+    assert module.retry_delay(refused) == 60

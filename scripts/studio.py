@@ -6,6 +6,7 @@ insurance_private_key. It must stay outside the repository.
 """
 import argparse
 import base64
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import os
@@ -46,6 +47,21 @@ def finalized_result(receipt):
     assert receipt.get("status_name") == "FINALIZED" and successful(receipt), "successful finality required"
     leader = next(item for item in receipt["consensus_data"]["leader_receipt"] if item.get("mode", "leader") == "leader")
     return json.loads(leader["result"]["payload"]["readable"])
+
+
+def retry_delay(response):
+    """Respect the server's rate window, adding a one-second reset buffer."""
+    header = response.headers.get("Retry-After")
+    if not header:
+        return 60
+    try:
+        seconds = int(header)
+    except ValueError:
+        try:
+            seconds = parsedate_to_datetime(header).timestamp() - time.time()
+        except (ValueError, TypeError, OverflowError):
+            return 60
+    return max(1, seconds) + 1
 
 
 def sanitize(value):
@@ -89,6 +105,20 @@ class Studio:
             os.fsync(stream.fileno())
         self.records.append(event)
 
+    def rate_wait(self, response, method, attempt):
+        delay = retry_delay(response)
+        self.log({"event": "RATE_LIMITED", "operation": self.current_operation,
+                  "method": method, "attempt": attempt + 1, "http_status": response.status_code,
+                  "retry_after": response.headers.get("Retry-After"),
+                  "rate_limit_remaining": response.headers.get("X-RateLimit-Remaining"),
+                  "rate_limit_reset": response.headers.get("X-RateLimit-Reset"),
+                  "retry_delay_seconds": delay})
+        print("RPC rate limited; retrying the same request after", delay, "seconds", flush=True)
+        while delay > 0:
+            chunk = min(delay, 60)
+            time.sleep(chunk)
+            delay -= chunk
+
     def client(self, role="deployer"):
         if role not in self.clients:
             c = create_client(chain=studionet, account=self.accounts[role])
@@ -104,22 +134,12 @@ class Studio:
                         if response.status_code == 429:
                             if attempt == 3:
                                 response.raise_for_status()
-                            self.log({"event": "RATE_LIMITED", "operation": self.current_operation,
-                                      "method": method, "attempt": attempt + 1,
-                                      "http_status": response.status_code,
-                                      "retry_after": response.headers.get("Retry-After"),
-                                      "rate_limit_remaining": response.headers.get("X-RateLimit-Remaining"),
-                                      "rate_limit_reset": response.headers.get("X-RateLimit-Reset")})
-                            print("RPC rate limited; retrying the same request after 60 seconds", flush=True)
-                            time.sleep(60)
+                            self.rate_wait(response, method, attempt)
                             continue
                         response.raise_for_status()
                         result = response.json()
                         if (result.get("error") or {}).get("code") == -32429 and attempt < 3:
-                            self.log({"event": "RATE_LIMITED", "operation": self.current_operation,
-                                      "method": method, "attempt": attempt + 1})
-                            print("RPC rate limited; retrying the same request after 60 seconds", flush=True)
-                            time.sleep(60)
+                            self.rate_wait(response, method, attempt)
                             continue
                         c.provider._raise_on_error(result, method)
                         break
