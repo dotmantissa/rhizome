@@ -93,7 +93,7 @@ def report(partial=False):
     for name, contract in deployment["contracts"].items():
         assert hashlib.sha256((ROOT / "contracts" / (name + ".py")).read_bytes()).hexdigest() == contract["code_sha256"], name
     receipts = {path.stem: json.loads(path.read_text()) for path in (VERIFICATION / "receipts").glob("*.json")}
-    hashes = {receipt["hash"] for receipt in receipts.values()}
+    by_hash = {receipt["hash"]: receipt for receipt in receipts.values()}
     expected_refusals = {"action-resolver-refused", "action-insurance-refused", "forged-eoa-callback",
                          "stale-source-action", "integer-bound-policy", "unauthorized-treasury-payout"}
     for name, contract in deployment["contracts"].items():
@@ -111,7 +111,10 @@ def report(partial=False):
         if not partial:
             for child in receipt.get("triggered_transactions", []):
                 child_hash = child if isinstance(child, str) else child.get("hash", child.get("tx_id"))
-                assert child_hash in hashes, name + ": finalized child receipt missing"
+                assert child_hash in by_hash, name + ": finalized child receipt missing"
+                child_receipt = by_hash[child_hash]
+                assert child_receipt["triggered_by"] == receipt["hash"] and child_receipt["triggered_on"] == "finalized", name + ": finalized emission provenance differs"
+                assert child_receipt["from_address"] == receipt["to_address"], name + ": child sender differs from emitting contract"
         protocol_refused = receipt.get("result_name") not in (None, "MAJORITY_AGREE")
         if protocol_refused:
             assert name.startswith("assess-insurance-unresolved-alpha-unknown-"), name + ": unexpected protocol refusal"
@@ -200,6 +203,27 @@ def report(partial=False):
             reservation = receipts["reserve-insurance-unresolved-alpha-unknown-" + str(attempt)]
             held = json.loads(leader(reservation)["result"]["payload"]["readable"])
             assert successful(reservation) and held["attempt"] == attempt
+    changing_path = VERIFICATION / "changed-source-record.json"
+    if changing_path.exists():
+        capture = json.loads(changing_path.read_text())
+        metadata = capture["metadata"]
+        attestation = intents.get("attest-changing-bytes")
+        if attestation:
+            assert json.loads(attestation["args"][0]) == metadata, "changing-byte capture differs from signed attestation"
+        elif not partial:
+            raise AssertionError("changing-byte attestation input missing")
+        initial = bytes.fromhex(capture["initial_raw_hex"])
+        assert len(initial) == metadata["size_bytes"] and hashlib.sha256(initial).hexdigest() == metadata["sha256"], "initial changing-byte commitment differs"
+        if "independent_later_raw_hex" in capture:
+            later = bytes.fromhex(capture["independent_later_raw_hex"])
+            assert hashlib.sha256(later).hexdigest() != metadata["sha256"], "later public bytes did not change"
+        elif not partial:
+            raise AssertionError("later changing-byte capture missing")
+    elif not partial:
+        raise AssertionError("changing-byte public capture missing")
+    if not partial:
+        changed = next(item["decision"] for item in assessments if item["operation"] == "assess-changed-public-bytes-changed-delta-1")
+        assert not changed["available"] and changed["relation"] == "UNKNOWN" and changed["unresolved_reason"] == "SOURCE_CHANGED" and changed["witnesses"] == [], "changed bytes supplied authority"
     certificates, actions = [], []
     for operation, receipt in sorted(receipts.items()):
         intent = intents.get(operation)
@@ -248,6 +272,33 @@ def report(partial=False):
             assert intent["address"] == deployment["contracts"][consumer_name]["address"], operation
             assert intent["sender"] == deployment["contracts"][consumer_name]["deployer"], operation
             actions.append({"transaction": receipt["hash"], "consumer": consumer_name, **action})
+    verified_payouts = []
+    payout_operations = {"treasury-owner-payout", "treasury-payout-identical-replay", "deploy-fee-recipient"}
+    if not partial or payout_operations <= set(receipts):
+        assert payout_operations <= set(receipts), "treasury payment evidence missing"
+        payout = receipts["treasury-owner-payout"]
+        replay = receipts["treasury-payout-identical-replay"]
+        receiver = receipts["deploy-fee-recipient"]
+        assert successful(payout) and successful(replay) and successful(receiver)
+        assert len(validator_addresses(receiver)) >= 2, "payment receiver deployment validators missing"
+        treasury = deployment["contracts"]["assessment_treasury"]
+        intent = intents["treasury-owner-payout"]
+        assert intent["address"] == treasury["address"] and intent["sender"] == treasury["deployer"], "payout owner binding differs"
+        record = json.loads(leader(payout)["result"]["payload"]["readable"])
+        assert intent["args"] == [record["operation_id"], receiver["to_address"], record["amount_atto"]]
+        assert record["recipient"] == receiver["to_address"] and record["status"] == "EMITTED_ON_FINALIZED"
+        assert json.loads(leader(replay)["result"]["payload"]["readable"]) == record and replay.get("triggered_transactions", []) == [], "payout replay emitted or changed record"
+        children = payout["triggered_transactions"]
+        assert len(children) == 1, "exactly one payment child required"
+        child_hash = children[0] if isinstance(children[0], str) else children[0].get("hash", children[0].get("tx_id"))
+        child = by_hash[child_hash]
+        assert successful(child) and child["to_address"] == record["recipient"] and int(child["value"]) == record["amount_atto"]
+        child_data = rlp.decode(bytes.fromhex(child["tx_data"].removeprefix("0x")))
+        assert calldata.decode(child_data[0]) == {"method": "accept_fee"}, "payment receiver method differs"
+        verified_payouts.append({"transaction": payout["hash"], "payment_child": child_hash,
+                                "replay_transaction": replay["hash"], **record})
+    reservations = [payload for operation, payload in intents.items()
+                    if payload["method"] == "reserve_pair" and operation in receipts and successful(receipts[operation])]
     catalog_path = VERIFICATION / "public-evidence.json"
     catalog = json.loads(catalog_path.read_text())["catalog"] if catalog_path.exists() else {}
     tree = ast.parse((ROOT / "contracts" / "rhizome.py").read_text())
@@ -274,6 +325,12 @@ def report(partial=False):
             assert len(raw) == record["size_bytes"] and hashlib.sha256(raw).hexdigest() == record["sha256"]
             packet.append({"record_id": record["record_id"], "sha256": record["sha256"], "text": raw.decode("utf-8")})
         prompt = instructions + "\nPOLICY=" + canonical(policy) + "\nLEFT=" + canonical(left) + "\nRIGHT=" + canonical(right) + "\nRECORDS=" + canonical(packet)
+        if item.get("decision", {}).get("available"):
+            expected_witnesses = [{"record_id": record["record_id"], "span_id": "all", "raw_sha256": record["sha256"], "start": 0, "end": record["size_bytes"]}
+                                  for record in sorted(records.values(), key=lambda value: value["record_id"])]
+            assert item["decision"]["witnesses"] == expected_witnesses, item["operation"] + ": committed complete-record witnesses differ"
+            for field, source in (("left_origin_ids", left), ("right_origin_ids", right)):
+                assert set(item["decision"][field]) <= set(source["candidate_origin_ids"]), item["operation"] + ": unsupported origin ID"
         budgets.append({"operation": item["operation"], "records": len(records),
                         "raw_packet_bytes": sum(value["size_bytes"] for value in records.values()),
                         "application_prompt_utf8_bytes": len(prompt.encode("utf-8")),
@@ -285,6 +342,8 @@ def report(partial=False):
                "distinct_finalized_transactions": len({value["hash"] for value in receipts.values()}),
                "semantic_assessments": len(assessments), "independent_semantic_validator_addresses": sorted(all_addresses),
                "finalized_protocol_refusals": protocol_refusals,
+               "paid_assessment_reservations": len(reservations), "native_assessment_charges_atto": sum(value["value"] for value in reservations),
+               "verified_treasury_payouts": verified_payouts,
                "model_assessments_with_available_evidence": sum(item["decision"]["available"] for item in assessments),
                "retrieval_only_assessments": sum(not item["decision"]["available"] for item in assessments),
                "verified_certificates": certificates, "verified_consumer_actions": actions,

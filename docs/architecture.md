@@ -13,7 +13,7 @@ stateDiagram-v2
     UNRESOLVED --> UNRESOLVED: retained terminal history
 ```
 
-The registry owner approves authority principals and public retrieval channels. Principals attest immutable source revisions. Policy owners create immutable policy revisions. Anyone may open a batch or fund and evaluate a pair. Each paid reservation is committed before semantic execution, so a failed consensus execution still consumes one of three application attempts. Only the reservation payer may release that reservation. Protocol validator rotation remains outside application control.
+The registry owner approves authority principals and public retrieval channels. Principals attest immutable source revisions. Policy owners create immutable policy revisions. Anyone may open a batch or fund and evaluate a pair. Each paid reservation is committed before semantic execution, so a failed consensus execution still consumes one of three paid reservations. Only the reservation payer may release that reservation. Protocol validator rotation remains outside application control.
 
 A batch contains two through six locked sources. A pair packet contains the two source records and their two disclosed control records. Validators inspect complete bytes, authenticate every commitment and span, evaluate once, and compare normalized relation, origins, scope, control coverage and rule IDs. Witnesses use canonical complete-record spans. No free-form model prose enters authoritative state.
 
