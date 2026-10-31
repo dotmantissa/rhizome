@@ -31,9 +31,11 @@ def test_changed_public_bytes_cannot_certify_origins(live):
         saved.write_text(json.dumps(capture, indent=2) + "\n")
     authority = {"authority_id": metadata["authority_id"], "principal": principal,
                  "channel": metadata["channel"], "url_prefix": "https://httpbingo.org/", "control_record": control}
-    studio.submit("authority-changing-bytes", source, "register_authority",
+    registered = studio.submit("authority-changing-bytes", source, "register_authority",
                   [metadata["authority_id"], principal, metadata["channel"], authority["url_prefix"], canonical(control)])
-    studio.submit("attest-changing-bytes", source, "attest_source", [canonical(metadata)])
+    studio.drain(registered, "authority-changing-bytes")
+    attested = studio.submit("attest-changing-bytes", source, "attest_source", [canonical(metadata)])
+    studio.drain(attested, "attest-changing-bytes")
     catalog["changed"] = {"source": metadata, "authority": authority, "role": "deployer"}
     open_request(live, "changed-public-bytes", ["changed", "delta"], "event-independence", resolver)
     second = requests.get(url, headers={"Accept-Encoding": "identity", "Cache-Control": "no-cache"}, timeout=30)

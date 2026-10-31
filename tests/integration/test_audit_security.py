@@ -5,7 +5,7 @@ fresh verification namespace alongside the original hosted scenarios.
 """
 import pytest
 from scripts.studio import agreeing_validators, finalized_result
-from tests.evidence import canonical, DEFINITION
+from tests.evidence import canonical, digest, DEFINITION
 from tests.integration.test_studio import live, open_request, configure_and_bind, assess, assess_pairs, deliver
 
 pytestmark = pytest.mark.integration
@@ -44,8 +44,11 @@ def test_10_authorized_payer_revocation_and_owner_recovery(live):
 
 def test_11_invalid_consumer_inputs_do_not_poison_configuration(live):
     studio, source, resolver, insurance, _ = live
-    studio.submit('policy-audit-independence', source, 'register_policy',
+    policy = studio.submit('policy-audit-independence', source, 'register_policy',
                   ['audit-independence', canonical(DEFINITION), 4])
+    studio.drain(policy, 'policy-audit-independence')
+    studio.submit('audit-forged-finality-confirmation', source, 'confirm_finalized_record',
+                  ['policy', 'audit-independence', 1, digest(finalized_result(policy))], role='resolver', expected_error=True)
     batch = open_request(live, 'audit-binding', ['delta', 'epsilon', 'gamma', 'zeta'], 'audit-independence', insurance)
     studio.submit('audit-invalid-consumer-policy', insurance, 'configure_policy',
                   ['audit-independence', 1, 2], role='insurance', expected_error=True)

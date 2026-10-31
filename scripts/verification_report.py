@@ -87,6 +87,33 @@ def check_replay_input(receipt, payload):
         assert len(encoded) == 2 and calldata.decode(encoded[0]) == make_calldata_object(method=payload["method"], args=payload["args"], kwargs=None), "method inputs differ"
 
 
+def finality_confirmation_args(receipt, payload):
+    method = payload["method"]
+    if method == "quarantine_record":
+        kind, record_id, revision, commitment = payload["args"]
+        return ["quarantine-" + kind, record_id, revision, commitment]
+    if method not in ("register_policy", "register_authority", "attest_source", "open_batch"):
+        return None
+    record = json.loads(leader(receipt)["result"]["payload"]["readable"])
+    if method == "register_policy":
+        return ["policy", record["policy_id"], record["revision"], digest(record)]
+    if method == "register_authority":
+        return ["authority", record["authority_id"], 0, digest(record)]
+    if method == "attest_source":
+        return ["source", record["source_id"], record["revision"], digest(record)]
+    return ["batch", record["envelope"]["request_id"], 0, record["batch_digest"]]
+
+
+def check_finality_confirmation(parent, child, args):
+    assert parent["status_name"] == child["status_name"] == "FINALIZED", "confirmation finality missing"
+    assert successful(parent) and successful(child), "confirmation execution failed"
+    assert child["triggered_by"] == parent["hash"] and child["triggered_on"] == "finalized", "confirmation parent provenance differs"
+    assert child["from_address"] == child["to_address"] == parent["to_address"], "confirmation must be an authenticated self message"
+    assert int(child["value"]) == 0, "confirmation value differs"
+    encoded = rlp.decode(bytes.fromhex(child["tx_data"].removeprefix("0x")))
+    assert calldata.decode(encoded[0]) == make_calldata_object(method="confirm_finalized_record", args=args, kwargs=None), "confirmation record commitment differs"
+
+
 def report(partial=False):
     deployment = json.loads((VERIFICATION / "deployment.json").read_text())
     outcomes_path = VERIFICATION / "integration-results.json"
@@ -105,6 +132,7 @@ def report(partial=False):
                          "audit-unauthorized-reservation-2", "audit-unauthorized-reservation-3",
                          "audit-invalid-consumer-policy", "audit-invalid-consumer-binding",
                          "audit-invalid-resolver-policy", "audit-invalid-resolver-binding",
+                         "audit-forged-finality-confirmation",
                          "refund-fee-failure", "refund-retry-fee-failure"}
     for name, contract in deployment["contracts"].items():
         receipt = receipts["deploy-" + name]
@@ -124,10 +152,15 @@ def report(partial=False):
                 assert child_hash in by_hash, name + ": finalized child receipt missing"
                 child_receipt = by_hash[child_hash]
                 probe = name in ("recovery-restrict-resolver", "recovery-restrict-insurance")
-                expected_on = "accepted" if probe else "finalized"
+                encoded_child = rlp.decode(bytes.fromhex(child_receipt["tx_data"].removeprefix("0x")))
+                child_calldata = calldata.decode(encoded_child[0])
+                probe_confirmation = probe and child_calldata.get("method") == "confirm_recovery_probe"
+                expected_on = "accepted" if probe and not probe_confirmation else "finalized"
                 assert child_receipt["triggered_by"] == receipt["hash"] and child_receipt["triggered_on"] == expected_on, name + ": emission provenance differs"
                 if probe:
                     assert receipt["to_address"] == receipts["deploy-restriction-source"]["to_address"], "accepted probes must come from the controlled fixture"
+                    if probe_confirmation:
+                        assert child_receipt["to_address"] == receipt["to_address"], "probe confirmation must be a self message"
                 assert child_receipt["from_address"] == receipt["to_address"], name + ": child sender differs from emitting contract"
         protocol_refused = receipt.get("result_name") not in (None, "MAJORITY_AGREE")
         if protocol_refused:
@@ -197,6 +230,30 @@ def report(partial=False):
     for operation, receipt in receipts.items():
         if operation in intents:
             check_replay_input(receipt, intents[operation])
+    confirmations, confirmed_records = [], {}
+    for operation, payload in intents.items():
+        parent = receipts.get(operation)
+        if parent is None or not successful(parent):
+            continue
+        args = finality_confirmation_args(parent, payload)
+        if args is None:
+            continue
+        key = (parent["to_address"], *args[:3])
+        children = parent.get("triggered_transactions", [])
+        if key in confirmed_records:
+            assert args == confirmed_records[key] and not children, operation + ": record replay created a new finality proof"
+            continue
+        confirmed_records[key] = args
+        assert len(children) == 1, operation + ": original record confirmation missing"
+        child_hash = children[0] if isinstance(children[0], str) else children[0].get("hash", children[0].get("tx_id"))
+        child = by_hash.get(child_hash)
+        if child is None and partial:
+            continue
+        assert child is not None, operation + ": confirmation child receipt missing"
+        check_finality_confirmation(parent, child, args)
+        confirmations.append({"parent": parent["hash"], "confirmation": child_hash,
+                              "source": parent["to_address"], "kind": args[0],
+                              "record_id": args[1], "revision": args[2], "commitment": args[3]})
     if not partial:
         assert expected_refusals <= set(receipts), "expected action/authority refusal receipts missing"
     for refusal in protocol_refusals:
@@ -354,8 +411,10 @@ def report(partial=False):
             assert intents[deploy]["code_sha256"] == deployment["contracts"][contract_name]["code_sha256"]
             assert intents[deploy]["args"] == [probe_source]
             restricted = receipts["recovery-restrict-" + role]
-            assert restricted["to_address"] == probe_source and len(restricted["triggered_transactions"]) == 2
-            children = [receipts["recovery-restrict-" + role + "-child-" + str(n)] for n in range(2)]
+            assert restricted["to_address"] == probe_source and len(restricted["triggered_transactions"]) == 3
+            all_children = [receipts["recovery-restrict-" + role + "-child-" + str(n)] for n in range(3)]
+            children = [receipt for receipt in all_children if receipt["triggered_on"] == "accepted"]
+            assert len(children) == 2
             values = [json.loads(leader(receipt)["result"]["payload"]["readable"]) for receipt in children]
             deferred = next(value for value in values if "outcome" in value)
             refresh = next(value for value in values if "status" in value)
@@ -417,6 +476,7 @@ def report(partial=False):
                "paid_assessment_reservations": len(reservations), "native_assessment_charges_atto": sum(value["value"] for value in reservations),
                "verified_treasury_payouts": verified_payouts,
                "verified_hosted_recoveries": recoveries,
+               "verified_finality_confirmations": confirmations,
                "model_assessments_with_available_evidence": sum(item["decision"]["available"] for item in assessments),
                "retrieval_only_assessments": sum(not item["decision"]["available"] for item in assessments),
                "verified_certificates": certificates, "verified_consumer_actions": actions,
@@ -429,7 +489,7 @@ def report(partial=False):
                "bounds_measurements": budgets, "semantic_receipts": assessments, "refused_execution_receipts": expected_failures,
                "measurement_limits": "Fixture prompt bytes are reconstructed exactly from the pinned source and committed inputs. Processing times include distinct serialized execution observations from round history and current roles, including leader self-validation, dissent and errors; identical carried-over snapshots are counted once and retain their round references. These are recorded observations, not unique provider request IDs or model-only latency. The application bounds one model evaluation per VM attempt, while host/protocol retries may repeat attempts. Provider token telemetry may include reasoning or repeated instrumentation and does not establish distinct billable calls or total spending. Missing telemetry is not counted as zero. Whole-process memory is not exposed. Small fixture measurements do not qualify maximum-sized packet throughput."}
     write_json(VERIFICATION / "verification-summary.json", summary)
-    return {key: value for key, value in summary.items() if key not in ("bounds_measurements", "semantic_receipts", "refused_execution_receipts", "token_usage_observations", "verified_certificates", "verified_consumer_actions")}
+    return {key: value for key, value in summary.items() if key not in ("bounds_measurements", "semantic_receipts", "refused_execution_receipts", "token_usage_observations", "verified_certificates", "verified_consumer_actions", "verified_finality_confirmations")}
 
 
 if __name__ == "__main__":

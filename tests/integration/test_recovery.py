@@ -29,15 +29,25 @@ def deploy_probe(studio, label, code, args=(), role="deployer"):
 
 
 def provision(studio, source, catalog, policy, count):
-    studio.submit("policy-" + policy, source, "register_policy", [policy, canonical(DEFINITION), count])
+    label = "policy-" + policy
+    pending = [(label, studio.submit(label, source, "register_policy", [policy, canonical(DEFINITION), count], wait_for_finality=False))]
     for name in ("delta", "epsilon", "zeta"):
-        item = catalog[name]
-        authority = item["authority"]
-        studio.submit(policy + "-authority-" + name, source, "register_authority",
-                      [authority["authority_id"], authority["principal"], authority["channel"],
-                       authority["url_prefix"], canonical(authority["control_record"])])
-        studio.submit(policy + "-attest-" + name, source, "attest_source",
-                      [canonical(item["source"])], role=item["role"])
+        authority = catalog[name]["authority"]
+        label = policy + "-authority-" + name
+        tx = studio.submit(label, source, "register_authority",
+                           [authority["authority_id"], authority["principal"], authority["channel"],
+                            authority["url_prefix"], canonical(authority["control_record"])], wait_for_finality=False)
+        pending.append((label, tx))
+    for label, tx in pending:
+        studio.drain(studio.wait(tx, label), label)
+    pending = []
+    for name in ("delta", "epsilon", "zeta"):
+        label = policy + "-attest-" + name
+        tx = studio.submit(label, source, "attest_source", [canonical(catalog[name]["source"])],
+                           role=catalog[name]["role"], wait_for_finality=False)
+        pending.append((label, tx))
+    for label, tx in pending:
+        studio.drain(studio.wait(tx, label), label)
 
 
 def one_child(studio, receipt, label, expected_error=False):
@@ -85,10 +95,13 @@ def test_12_failed_fee_refunds_forward_once_to_fixed_treasury(live):
 def restriction_probe_code():
     source = (ROOT / "contracts/rhizome.py").read_text()
     assert source.count("    treasury_retries: TreeMap[str, str]") == 1
-    source = source.replace("    treasury_retries: TreeMap[str, str]", "    treasury_retries: TreeMap[str, str]\n    recovery_probe_restricted: bool")
+    source = source.replace("    treasury_retries: TreeMap[str, str]", "    treasury_retries: TreeMap[str, str]\n    recovery_probe_restricted: bool\n    recovery_probe_finalized_restricted: bool")
     target = '        return {"current": not reason, "reason": reason, "generation": envelope["generation"], "superseded_by": batch["superseded_by"], "batch_digest": batch["batch_digest"]}'
     assert source.count(target) == 1
     source = source.replace(target, '        if self.recovery_probe_restricted:\n            reason = "CONTROLLED_RECOVERY_PROBE"\n' + target)
+    final_return = '        return {"current": not reason and not pending, "reason": reason or ("FINALITY_PENDING" if pending else ""), "generation": envelope["generation"],'
+    assert source.count(final_return) == 1
+    source = source.replace(final_return, '        if self.recovery_probe_finalized_restricted:\n            reason = "CONTROLLED_RECOVERY_PROBE"\n' + final_return)
     return (source + '''
 
     @gl.public.write
@@ -96,6 +109,14 @@ def restriction_probe_code():
         self._no_value()
         require(gl.message.sender_address == self.owner, "probe owner only")
         self.recovery_probe_restricted = False
+        gl.get_contract_at(gl.message.contract_address).emit(on="finalized").confirm_recovery_probe(False)
+
+    @gl.public.write
+    def confirm_recovery_probe(self, restricted: bool) -> None:
+        self._no_value()
+        require(gl.message.sender_address == gl.message.contract_address, "probe self confirmation required")
+        require(type(restricted) is bool and self.recovery_probe_restricted == restricted, "probe confirmation mismatch")
+        self.recovery_probe_finalized_restricted = restricted
 
     @gl.public.write
     def restrict_and_probe(self, request_id: str, consumer: str, operation_id: str) -> None:
@@ -112,6 +133,7 @@ def restriction_probe_code():
         payload["delivery_digest"] = digest(payload)
         self.deliveries[consumer + ":" + operation_id] = canonical(payload)
         self.recovery_probe_restricted = True
+        gl.get_contract_at(gl.message.contract_address).emit(on="finalized").confirm_recovery_probe(True)
         gl.get_contract_at(Address(consumer)).emit(on="accepted").receive_certificate(canonical(payload))
         gl.get_contract_at(Address(consumer)).emit(on="accepted").refresh_subject(payload["certificate"]["sealed_result"]["subject_id"])
 ''').encode()
@@ -148,14 +170,17 @@ def test_13_tentative_restriction_preserves_permission_and_delivery_retries(reco
     label = "recovery-restrict-" + role
     restricted = studio.submit(label, source, "restrict_and_probe", ["tentative-recovery", consumer, operation])
     studio.drain(restricted, label)
-    children = [json.loads((VERIFICATION / "receipts" / (label + "-child-" + str(n) + ".json")).read_text()) for n in range(2)]
+    children = [json.loads((VERIFICATION / "receipts" / (label + "-child-" + str(n) + ".json")).read_text()) for n in range(len(restricted["triggered_transactions"]))]
+    children = [receipt for receipt in children if receipt["triggered_on"] == "accepted"]
+    assert len(children) == 2
     results = [finalized_result(receipt) for receipt in children]
     deferred = next(result for result in results if "outcome" in result)
     refreshed = next(result for result in results if "status" in result)
     assert deferred["outcome"] == "DEFERRED"
     assert refreshed["status"] == "CERTIFIED" and not refreshed["permitted"]
     assert studio.read(source, "get_delivery", [consumer, operation])["acknowledgement"] is None
-    studio.submit("recovery-restore-" + role, source, "restore_recovery_probe")
+    restored = studio.submit("recovery-restore-" + role, source, "restore_recovery_probe")
+    studio.drain(restored, "recovery-restore-" + role)
     assert studio.read(consumer, "get_subject", ["tentative-recovery"])["permitted"]
     assert deliver(recovery_live, "tentative-recovery", consumer, operation)["outcome"] == "APPLIED"
     result = studio.submit("recovery-action-" + role, consumer, "apply_action", ["tentative-recovery", "recovery-action-" + role], role=role)

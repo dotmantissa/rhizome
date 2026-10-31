@@ -27,15 +27,18 @@ def live():
     resolver = deployment["contracts"]["event_resolver"]["address"]
     insurance = deployment["contracts"]["insurance_gate"]["address"]
     assert studio.accounts["resolver"].address != studio.accounts["insurance"].address
+    policy_pending = []
     for policy, count, role in [("event-independence", 3, "deployer"), ("insurance-independence", 2, "insurance")]:
-        studio.submit("policy-" + policy, source, "register_policy", [policy, canonical(DEFINITION), count], role=role)
+        label = "policy-" + policy
+        tx = studio.submit(label, source, "register_policy", [policy, canonical(DEFINITION), count], role=role, wait_for_finality=False)
+        policy_pending.append((label, tx))
     catalog = {}
     specifications = [("alpha", "independent", "deployer"), ("beta", "independent", "resolver"), ("gamma", "independent", "insurance"),
                       ("wire-a", "copy", "deployer"), ("wire-b", "copy", "resolver"),
                       ("parent-a", "parent", "deployer"), ("parent-b", "parent", "insurance"),
                       ("inject", "injection", "deployer"), ("unknown", "unknown", "insurance"),
                       ("delta", "independent", "delta"), ("epsilon", "independent", "epsilon"), ("zeta", "independent", "zeta")]
-    authorities_pending = []
+    authorities_pending = list(policy_pending)
     for name, mode, role in specifications:
         principal = studio.accounts[role].address
         cr, cb, sr, sb = source_packet(name, principal, mode)
@@ -48,13 +51,13 @@ def live():
         authorities_pending.append(("authority-" + name, tx))
         catalog[name] = {"source": sr, "authority": authority, "role": role}
     for label, tx in authorities_pending:
-        studio.wait(tx, label)
+        studio.drain(studio.wait(tx, label), label)
     sources_pending = []
     for name, _, role in specifications:
         tx = studio.submit("attest-" + name, source, "attest_source", [canonical(catalog[name]["source"])], role=role, wait_for_finality=False)
         sources_pending.append(("attest-" + name, tx))
     for label, tx in sources_pending:
-        studio.wait(tx, label)
+        studio.drain(studio.wait(tx, label), label)
     (VERIFICATION / "public-evidence.json").write_text(json.dumps({"classification": "SYNTHETIC TEST RECORDS", "catalog": catalog}, indent=2) + "\n")
     return studio, source, resolver, insurance, catalog
 
@@ -77,6 +80,7 @@ def open_request(live, request_id, names, policy, consumer, subject=None, genera
         body = {"envelope": envelope, "sources": [{"source_id": s["source_id"], "revision": s["revision"]} for s in sources]}
         saved_path.write_text(json.dumps(body, indent=2) + "\n")
     receipt = studio.submit("open-" + request_id, source, "open_batch", [request_id, policy, canonical(body)])
+    studio.drain(receipt, "open-" + request_id)
     return finalized_result(receipt)
 
 
@@ -270,11 +274,13 @@ def test_07_duplicate_reordered_and_forged_callbacks(live):
 def test_08_source_revision_and_quarantine_at_action_time(live):
     studio, source, resolver, insurance, catalog = live
     successor = source_packet("beta", studio.accounts["resolver"].address, revision=2)[2]
-    studio.submit("attest-beta-revision2", source, "attest_source", [canonical(successor)], role="resolver")
+    updated = studio.submit("attest-beta-revision2", source, "attest_source", [canonical(successor)], role="resolver")
+    studio.drain(updated, "attest-beta-revision2")
     studio.submit("replay-beta-old-revision", source, "attest_source", [canonical(catalog["beta"]["source"])], role="resolver")
     assert not studio.read(source, "is_current", ["event-permitted"])["current"]
     studio.submit("stale-source-action", resolver, "apply_action", ["event-permitted", "stale-source-action"], role="resolver", expected_error=True)
-    studio.submit("quarantine-alpha", source, "quarantine_record", ["source", "alpha", 1, digest("synthetic revocation probe")])
+    quarantined = studio.submit("quarantine-alpha", source, "quarantine_record", ["source", "alpha", 1, digest("synthetic revocation probe")])
+    studio.drain(quarantined, "quarantine-alpha")
     studio.submit("refresh-resolver-subject", resolver, "refresh_subject", ["event-permitted"], role="resolver")
     assert not studio.read(resolver, "get_subject", ["event-permitted"])["permitted"]
     invalidated = studio.submit("resolve-finalized-superseded-request", source, "resolve_unavailable", ["insurance-event-gen1"])
