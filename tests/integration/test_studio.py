@@ -12,7 +12,7 @@ from pathlib import Path
 import time
 import pytest
 import requests
-from scripts.studio import Studio, VERIFICATION, agreeing_validators, successful
+from scripts.studio import Studio, VERIFICATION, agreeing_validators, successful, finalized_result
 from tests.evidence import canonical, digest, source_packet, record, DEFINITION
 
 pytestmark = pytest.mark.integration
@@ -76,8 +76,8 @@ def open_request(live, request_id, names, policy, consumer, subject=None, genera
                     "generation": generation, "deadline": int(time.time()) + 604800}
         body = {"envelope": envelope, "sources": [{"source_id": s["source_id"], "revision": s["revision"]} for s in sources]}
         saved_path.write_text(json.dumps(body, indent=2) + "\n")
-    studio.submit("open-" + request_id, source, "open_batch", [request_id, policy, canonical(body)])
-    return studio.read(source, "get_batch", [request_id])
+    receipt = studio.submit("open-" + request_id, source, "open_batch", [request_id, policy, canonical(body)])
+    return finalized_result(receipt)
 
 
 def assess(live, request_id, left, right, attempt=1):
@@ -87,8 +87,8 @@ def assess(live, request_id, left, right, attempt=1):
     studio.drain(reservation, "reserve-" + label)
     receipt = studio.submit("assess-" + label, source, "assess_pair", [request_id, left, right])
     assert len(agreeing_validators(receipt)) >= 2, "semantic execution needs two independent agreeing validators"
-    decision = studio.read(source, "get_pair", [request_id, left, right])["decision"]
-    assert decision is not None
+    decision = finalized_result(receipt)
+    assert decision["pair_ids"] == sorted([left, right])
     return decision, receipt
 
 
@@ -208,7 +208,8 @@ def test_06_complete_six_source_matrix(live):
     for label, tx, left, right in pending:
         receipt = studio.wait(tx, label)
         assert len(agreeing_validators(receipt)) >= 2
-        decision = studio.read(source, "get_pair", ["six-independent", left, right])["decision"]
+        decision = finalized_result(receipt)
+        assert decision["pair_ids"] == sorted([left, right])
         assert decision["relation"] == "INDEPENDENT", decision
     studio.submit("seal-six-independent", source, "seal_batch", ["six-independent"])
     certificate = studio.read(source, "get_certificate", ["six-independent"])["sealed_result"]

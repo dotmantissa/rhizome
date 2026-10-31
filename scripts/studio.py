@@ -41,6 +41,13 @@ def agreeing_validators(receipt):
             if v.get("mode") == "validator" and v.get("vote") == "agree" and v.get("execution_result") == "SUCCESS"]
 
 
+def finalized_result(receipt):
+    """Decode a successful finalized GenVM return without a second RPC read."""
+    assert receipt.get("status_name") == "FINALIZED" and successful(receipt), "successful finality required"
+    leader = next(item for item in receipt["consensus_data"]["leader_receipt"] if item.get("mode", "leader") == "leader")
+    return json.loads(leader["result"]["payload"]["readable"])
+
+
 def sanitize(value):
     if isinstance(value, dict):
         return {k: "REDACTED" if k.lower() in ("private_key", "api_key", "token", "secret", "password") else sanitize(v) for k, v in value.items()}

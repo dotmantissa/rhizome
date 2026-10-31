@@ -94,3 +94,18 @@ def test_finalized_receipt_recovery_needs_no_rpc_and_checks_execution(transport,
     assert instance.wait("synthetic-tx", "synthetic-finalized") == receipt
     with pytest.raises(AssertionError, match="execution outcome"):
         instance.wait("synthetic-tx", "synthetic-finalized", expected_error=True)
+
+
+@pytest.mark.parametrize("status,execution,valid", [("FINALIZED", "SUCCESS", True),
+                                                   ("ACCEPTED", "SUCCESS", False),
+                                                   ("FINALIZED", "ERROR", False)])
+def test_return_value_requires_successful_finality(status, execution, valid):
+    receipt = {"status_name": status, "consensus_data": {"leader_receipt": [{
+        "mode": "leader", "execution_result": execution,
+        "result": {"status": "return" if execution == "SUCCESS" else "error",
+                   "payload": {"readable": '{"synthetic_value":3}'}}}]}}
+    if valid:
+        assert module.finalized_result(receipt) == {"synthetic_value": 3}
+    else:
+        with pytest.raises(AssertionError, match="successful finality"):
+            module.finalized_result(receipt)
