@@ -73,7 +73,7 @@ def open_request(live, request_id, names, policy, consumer, subject=None, genera
                     "policy_id": policy, "policy_revision": 1, "subject_id": subject or request_id,
                     "subject_digest": digest({"synthetic_subject": subject or request_id}), "source_manifest_digest": digest(manifest),
                     "consumer_address": consumer, "consequence_digest": digest({"intended_consequence": "test independence gate", "subject": subject or request_id}),
-                    "generation": generation, "deadline": int(time.time()) + 86400}
+                    "generation": generation, "deadline": int(time.time()) + 604800}
         body = {"envelope": envelope, "sources": [{"source_id": s["source_id"], "revision": s["revision"]} for s in sources]}
         saved_path.write_text(json.dumps(body, indent=2) + "\n")
     studio.submit("open-" + request_id, source, "open_batch", [request_id, policy, canonical(body)])

@@ -1,0 +1,82 @@
+"""Synthetic transport faults only; these tests do not claim hosted consensus."""
+from types import SimpleNamespace
+
+import pytest
+import requests
+
+from scripts import studio as module
+
+
+@pytest.fixture
+def transport(monkeypatch, tmp_path):
+    sleeps, calls = [], []
+    provider = SimpleNamespace(url="https://rpc.invalid")
+
+    def raise_on_error(result, method):
+        if result.get("error"):
+            raise RuntimeError("RPC error")
+
+    provider._raise_on_error = raise_on_error
+    monkeypatch.setattr(module, "create_client", lambda **kwargs: SimpleNamespace(provider=provider))
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+    instance = module.Studio.__new__(module.Studio)
+    instance.accounts = {"deployer": object()}
+    instance.clients = {}
+    instance.records = []
+    instance.journal = tmp_path / "journal.jsonl"
+    instance.last_rpc = 0
+    instance.current_operation = "synthetic-write"
+    instance.min_rpc_interval = 0
+
+    def run(responses, method="eth_sendRawTransaction"):
+        responses = iter(responses)
+
+        def post(url, **kwargs):
+            calls.append(kwargs["json"])
+            response = next(responses)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        monkeypatch.setattr(module.requests, "post", post)
+        return instance.client().provider.make_request(method, ["synthetic-signed-bytes"])
+
+    return instance, run, calls, sleeps
+
+
+def response(status=200, result=None):
+    value = requests.Response()
+    value.status_code = status
+    value.url = "https://rpc.invalid"
+    value.json = lambda: result or {"result": "synthetic-transaction-hash"}
+    return value
+
+
+@pytest.mark.parametrize("refusal", [response(429), response(result={"error": {"code": -32429}})])
+def test_explicit_rate_refusal_retries_identical_signed_request(transport, refusal):
+    instance, run, calls, sleeps = transport
+    assert run([refusal, response()])["result"] == "synthetic-transaction-hash"
+    assert len(calls) == 2 and calls[0] == calls[1]
+    assert sleeps == [60]
+    assert [row["event"] for row in instance.records] == ["RATE_LIMITED", "BROADCAST"]
+
+
+def test_ambiguous_write_timeout_never_rebroadcasts(transport):
+    instance, run, calls, _ = transport
+    with pytest.raises(requests.Timeout):
+        run([requests.Timeout("synthetic timeout"), response()])
+    assert len(calls) == 1 and instance.records == []
+
+
+def test_read_timeout_can_retry(transport):
+    _, run, calls, sleeps = transport
+    assert run([requests.Timeout("synthetic timeout"), response()], "gen_getTransaction")["result"]
+    assert len(calls) == 2 and sleeps == [5]
+
+
+def test_rate_limit_retries_are_bounded(transport):
+    instance, run, calls, sleeps = transport
+    with pytest.raises(requests.HTTPError):
+        run([response(429) for _ in range(4)])
+    assert len(calls) == 4 and sleeps == [60, 60, 60]
+    assert all(row["event"] == "RATE_LIMITED" for row in instance.records)

@@ -1,4 +1,4 @@
-"""Deterministic callback tests running the actual three contracts.
+"""Deterministic callback tests running the actual four contracts.
 
 The direct harness models finalized message dispatch only. Actual network
 finality and validator consensus are verified separately in Studio integration.

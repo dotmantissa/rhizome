@@ -71,7 +71,7 @@ class Studio:
         self.records = [json.loads(line) for line in self.journal.read_text().splitlines()] if self.journal.exists() else []
         self.last_rpc = 0.0
         self.current_operation = None
-        self.min_rpc_interval = float(os.environ.get("RHIZOME_RPC_INTERVAL", "3.8"))
+        self.min_rpc_interval = float(os.environ.get("RHIZOME_RPC_INTERVAL", "4.5"))
         (VERIFICATION / "receipts").mkdir(exist_ok=True)
 
     def log(self, event):
@@ -87,19 +87,33 @@ class Studio:
             c = create_client(chain=studionet, account=self.accounts[role])
             def paced(method, params):
                 result = None
-                for attempt in range(3):
+                for attempt in range(4):
                     gap = self.min_rpc_interval - (time.monotonic() - self.last_rpc)
                     if gap > 0:
                         time.sleep(gap)
                     self.last_rpc = time.monotonic()
                     try:
                         response = requests.post(c.provider.url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=(10, 45))
+                        if response.status_code == 429:
+                            if attempt == 3:
+                                response.raise_for_status()
+                            self.log({"event": "RATE_LIMITED", "operation": self.current_operation,
+                                      "method": method, "attempt": attempt + 1})
+                            print("RPC rate limited; retrying the same request after 60 seconds", flush=True)
+                            time.sleep(60)
+                            continue
                         response.raise_for_status()
                         result = response.json()
+                        if result.get("error", {}).get("code") == -32429 and attempt < 3:
+                            self.log({"event": "RATE_LIMITED", "operation": self.current_operation,
+                                      "method": method, "attempt": attempt + 1})
+                            print("RPC rate limited; retrying the same request after 60 seconds", flush=True)
+                            time.sleep(60)
+                            continue
                         c.provider._raise_on_error(result, method)
                         break
                     except (requests.RequestException, ValueError):
-                        if method == "eth_sendRawTransaction" or attempt == 2:
+                        if method == "eth_sendRawTransaction" or attempt == 3:
                             raise
                         time.sleep(5)
                 if method == "eth_sendRawTransaction" and result.get("result"):
@@ -194,6 +208,9 @@ class Studio:
 
     def deploy(self):
         source_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        saved_deployment = VERIFICATION / "deployment.json"
+        if saved_deployment.exists():
+            source_commit = json.loads(saved_deployment.read_text())["source_commit"]
         result = {"network": "studionet", "chain_id": 61999, "rpc": "https://studio.genlayer.com/api",
                   "runner": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
                   "source_commit": source_commit, "contracts": {}, "accounts": {r: a.address for r, a in self.accounts.items()}}

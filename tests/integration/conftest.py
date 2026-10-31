@@ -4,29 +4,38 @@ import os
 from pathlib import Path
 import time
 
-from scripts.studio import VERIFICATION
+from scripts.studio import VERIFICATION, write_json
+import pytest
 
 RESULTS = {}
 EXPECTED = []
+RESUME = False
+
+
+def pytest_addoption(parser):
+    parser.addoption("--rhizome-resume", action="store_true", help="retain verified passing live scenarios")
 
 
 def save_results(complete=False):
     destination = VERIFICATION / "integration-results.json"
-    temporary = destination.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps({
+    write_json(destination, {
         "network": "studionet", "chain_id": 61999,
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "complete": complete, "expected_tests": EXPECTED, "tests": RESULTS,
-    }, indent=2) + "\n")
-    os.replace(temporary, destination)
+    })
 
 
 def pytest_collection_finish(session):
-    global EXPECTED
+    global EXPECTED, RESUME
+    RESUME = session.config.getoption("--rhizome-resume")
     EXPECTED = [item.nodeid for item in session.items]
     previous = VERIFICATION / "integration-results.json"
     if previous.exists():
         RESULTS.update(json.loads(previous.read_text()).get("tests", {}))
+    if RESUME:
+        for item in session.items:
+            if RESULTS.get(item.nodeid, {}).get("outcome") == "passed":
+                item.add_marker(pytest.mark.skip(reason="previously verified in this live run"))
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -38,9 +47,16 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 def pytest_runtest_logreport(report):
+    if RESUME and report.skipped and RESULTS.get(report.nodeid, {}).get("outcome") == "passed":
+        return
     if report.when == "call" or report.failed:
         RESULTS[report.nodeid] = {
             "outcome": report.outcome, "phase": report.when,
             "duration_seconds": report.duration,
         }
+        with (VERIFICATION / "integration-history.jsonl").open("a") as stream:
+            stream.write(json.dumps({"test": report.nodeid, **RESULTS[report.nodeid],
+                                    "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
         save_results()

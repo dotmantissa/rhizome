@@ -147,14 +147,13 @@ def test_complete_declared_packet_oversize_rejected_before_model(rhizome, prepar
     assert not direct_vm._captured_validators
 
 
-def test_paid_reservation_survives_semantic_failure_and_exhausts(rhizome, prepare, direct_vm):
+def test_paid_reservation_survives_source_unavailability_and_exhausts(rhizome, prepare, direct_vm):
     prepare()
     for attempt in range(1, 4):
         direct_vm.value = 1
         rhizome.reserve_pair("batch-1", "alpha", "beta", "attempt-" + str(attempt))
         direct_vm.value = 0
-        # Malformed model execution is rejected. The preceding reservation is a
-        # different committed transaction and remains paid/consumed.
+        # Source unavailability cannot undo a separately committed reservation.
         direct_vm.clear_mocks()
         direct_vm.mock_web("httpbingo", {"status": 503, "body": b""})
         result = rhizome.assess_pair("batch-1", "alpha", "beta")
@@ -166,6 +165,27 @@ def test_paid_reservation_survives_semantic_failure_and_exhausts(rhizome, prepar
     result = rhizome.resolve_unavailable("batch-1")["sealed_result"]
     assert result["unresolved_reason"] == "RETRY_EXHAUSTED"
     assert result["certified_origin_count"] == 0
+
+
+def test_malformed_model_keeps_paid_hold_and_requires_payer_release(rhizome, prepare, direct_vm):
+    prepare()
+    for attempt in range(1, 4):
+        direct_vm.value = 1
+        rhizome.reserve_pair("batch-1", "alpha", "beta", "malformed-" + str(attempt))
+        direct_vm.value = 0
+        direct_vm.mock_llm("You adjudicate", '{"relation":"INDEPENDENT"}')
+        with direct_vm.expect_revert("LLM_ERROR"):
+            rhizome.assess_pair("batch-1", "alpha", "beta")
+        held = rhizome.get_pair("batch-1", "alpha", "beta")
+        assert held["reservation"]["status"] == "PENDING" and held["attempts"] == attempt
+        assert rhizome.get_limits()["charged_atto"] == attempt
+        assert held["decision"] is None
+        rhizome.release_pair("batch-1", "alpha", "beta")
+    direct_vm.value = 1
+    with direct_vm.expect_revert("pair retry exhausted"):
+        rhizome.reserve_pair("batch-1", "alpha", "beta", "malformed-4")
+    direct_vm.value = 0
+    assert rhizome.resolve_unavailable("batch-1")["sealed_result"]["unresolved_reason"] == "RETRY_EXHAUSTED"
 
 
 def test_reservation_authority_idempotence_and_conflicts(rhizome, prepare, direct_vm, direct_bob):
