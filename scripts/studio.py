@@ -81,7 +81,9 @@ def retry_delay(response):
 
 def sanitize(value):
     if isinstance(value, dict):
-        return {k: "REDACTED" if k.lower() in ("private_key", "api_key", "token", "secret", "password") else sanitize(v) for k, v in value.items()}
+        return {k: "REDACTED" if k.lower() in ("private_key", "api_key", "token", "secret", "password")
+                or k.lower().endswith(("_private_key", "_api_key", "_token", "_secret", "_password")) else sanitize(v)
+                for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [sanitize(v) for v in value]
     return value
@@ -272,6 +274,11 @@ class Studio:
         saved_deployment = VERIFICATION / "deployment.json"
         if saved_deployment.exists():
             source_commit = json.loads(saved_deployment.read_text())["source_commit"]
+        # Bind metadata to committed bytes before submitting any deployment.
+        for name in ("assessment_treasury", "rhizome", "event_resolver", "insurance_gate"):
+            source_path = "contracts/" + name + ".py"
+            committed = subprocess.check_output(["git", "show", source_commit + ":" + source_path], cwd=ROOT)
+            assert committed == (ROOT / source_path).read_bytes(), "commit contract source before deployment: " + name
         result = {"network": "studionet", "chain_id": 61999, "rpc": "https://studio.genlayer.com/api",
                   "runner": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
                   "source_commit": source_commit, "contracts": {}, "accounts": {r: a.address for r, a in self.accounts.items()}}
