@@ -10,6 +10,15 @@ def rhizome(direct_vm, direct_deploy, direct_owner):
     direct_vm.warp("2026-10-30T10:00:00Z")
     contract = direct_deploy("contracts/rhizome.py", address(direct_owner), 1, sdk_version="v0.2.16")
     direct_vm.check_pickling = True
+    # Direct mode has one snapshot. Explicitly dispatch the finalized self-read;
+    # snapshot divergence is separately injected in the recovery regressions.
+    def self_view(vm, request):
+        call = request.get("CallContract")
+        if call and call["calldata"]["method"] == "is_current":
+            from genlayer.py import calldata
+            return b"\x00" + calldata.encode(contract.is_current(*call["calldata"]["args"]))
+        return None
+    direct_vm._gl_call_hook = self_view
     return contract
 
 

@@ -6,6 +6,7 @@ counts origins, not correct conclusions. Delivery uses finalized authenticated
 messages. See docs/protocol.md for authority, schemas and integration contracts.
 """
 from genlayer import *
+from genlayer.py.public_abi import StorageType
 import json
 import hashlib
 import re
@@ -290,6 +291,8 @@ class Rhizome(gl.Contract):
     reservation_operations: TreeMap[str, str]
     policy_revision_requests: TreeMap[str, str]
     policy_revision_counts: TreeMap[str, u64]
+    assessment_payers: TreeMap[str, bool]
+    treasury_retries: TreeMap[str, str]
 
     def __init__(self, treasury_address: str, assessment_fee_atto: int):
         integer(assessment_fee_atto, 1, (1 << 256) - 1)
@@ -486,6 +489,34 @@ class Rhizome(gl.Contract):
         self._history({"event": "BATCH_OPENED", "request_id": request_id, "batch_digest": batch_digest})
         return result
 
+    @gl.public.write
+    def authorize_assessment_payer(self, request_id: str, payer_address: str, authorized: bool) -> None:
+        """Only a request owner may delegate paid assessment access."""
+        self._no_value()
+        batch = self._batch(request_id)
+        require(batch["envelope"]["owner"] == str(gl.message.sender_address), "request owner only")
+        require(type(authorized) is bool, "authorization boolean required")
+        payer = Address(payer_address)
+        require(payer != Address("0x" + "0" * 40), "zero payer")
+        self.assessment_payers[request_id + ":" + str(payer)] = authorized
+
+    @gl.public.write
+    def retry_treasury_transfer(self, operation_id: str, amount_atto: int) -> dict:
+        """Forward retained/refunded fees to the immutable treasury once per operation."""
+        self._no_value()
+        require(gl.message.sender_address == self.owner, "registry owner only")
+        identifier(operation_id)
+        integer(amount_atto, 1, (1 << 256) - 1)
+        result = {"operation_id": operation_id, "treasury": str(self.treasury),
+                  "amount_atto": amount_atto, "status": "EMITTED_ON_FINALIZED"}
+        if operation_id in self.treasury_retries:
+            require(json.loads(self.treasury_retries[operation_id]) == result, "conflicting treasury retry operation")
+            return result
+        require(self.balance >= amount_atto, "insufficient retained fees")
+        self.treasury_retries[operation_id] = canonical(result)
+        gl.get_contract_at(self.treasury).emit(value=u256(amount_atto), on="finalized").accept_fee()
+        return result
+
     @gl.public.write.payable
     def reserve_pair(self, request_id: str, left_id: str, right_id: str, operation_id: str) -> dict:
         """Pay and durably reserve an application attempt before nondeterminism."""
@@ -504,6 +535,9 @@ class Rhizome(gl.Contract):
                 return old
             require(old["status"] != "PENDING", "reservation held by payer")
         self._active(batch)
+        require(batch["envelope"]["owner"] == str(gl.message.sender_address)
+                or self.assessment_payers.get(request_id + ":" + str(gl.message.sender_address), False),
+                "request owner or authorized payer required")
         pair = self.pairs.get(key)
         require(pair is None or json.loads(pair)["relation"] == "UNKNOWN", "pair decision immutable")
         count = int(self.attempts.get(key, u8(0)))
@@ -525,9 +559,10 @@ class Rhizome(gl.Contract):
     @gl.public.write
     def release_pair(self, request_id: str, left_id: str, right_id: str) -> None:
         self._no_value()
-        _, key, _ = self._pair_key(request_id, left_id, right_id)
+        batch, key, _ = self._pair_key(request_id, left_id, right_id)
         reservation = self._load(self.reservations, key)
-        require(reservation["payer"] == str(gl.message.sender_address), "reservation payer only")
+        require(reservation["payer"] == str(gl.message.sender_address)
+                or batch["envelope"]["owner"] == str(gl.message.sender_address), "reservation payer or request owner only")
         require(reservation["status"] in ("PENDING", "RELEASED"), "completed reservation cannot be released")
         reservation["status"] = "RELEASED"
         self.reservations[key] = canonical(reservation)
@@ -544,6 +579,9 @@ class Rhizome(gl.Contract):
             return json.loads(pair)
         self._active(batch)
         require(reservation["status"] == "PENDING" and reservation["payer"] == str(gl.message.sender_address), "active payer reservation required")
+        require(batch["envelope"]["owner"] == str(gl.message.sender_address)
+                or self.assessment_payers.get(request_id + ":" + str(gl.message.sender_address), False),
+                "request owner or authorized payer required")
         sources = {s["source_id"]: s for s in batch["manifest"]["sources"]}
         authorities = {a["authority_id"]: a for a in batch["manifest"]["authorities"]}
         left, right = sources[ids[0]], sources[ids[1]]
@@ -646,7 +684,13 @@ class Rhizome(gl.Contract):
                 if int(self.attempts.get(key, u8(0))) == 3 and (pair is None or json.loads(pair)["relation"] == "UNKNOWN"):
                     reservation = self._load(self.reservations, key)
                     exhausted = exhausted or reservation["status"] in ("ASSESSED", "RELEASED")
-        require(expired or exhausted or not self.is_current(request_id)["current"], "no unresolved recovery condition")
+        # A tentative restriction may disappear on appeal. It cannot permanently
+        # terminate an otherwise recoverable batch in another transaction.
+        invalidated = False
+        if not expired and not exhausted and not self.is_current(request_id)["current"]:
+            finalized = gl.get_contract_at(gl.message.contract_address).view(state=StorageType.LATEST_FINAL).is_current(request_id)
+            invalidated = not finalized["current"]
+        require(expired or exhausted or invalidated, "no unresolved recovery condition")
         return self._terminal(batch, "DEADLINE_ELAPSED" if expired else "RETRY_EXHAUSTED" if exhausted else "EVIDENCE_INVALIDATED")
 
     @gl.public.write
@@ -833,5 +877,6 @@ class Rhizome(gl.Contract):
                 "max_prompt_tokens_conservative": MAX_PROMPT_BYTES, "max_model_calls_per_participant": 1,
                 "max_output_bytes": MAX_OUTPUT_BYTES, "max_history_page": MAX_HISTORY_PAGE,
                 "assessment_fee_atto": int(self.assessment_fee_atto), "treasury": str(self.treasury),
+                "retained_fee_balance_atto": int(self.balance),
                 "request_count": int(self.request_count), "delivery_count": int(self.delivery_count),
                 "charged_atto": int(self.charged_atto)}

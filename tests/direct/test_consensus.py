@@ -197,7 +197,7 @@ def test_reservation_authority_idempotence_and_conflicts(rhizome, prepare, direc
     with direct_vm.expect_revert("conflicting reservation operation"):
         rhizome.reserve_pair("batch-1", "alpha", "gamma", "op")
     direct_vm.sender = direct_bob
-    with direct_vm.expect_revert("reservation payer only"):
+    with direct_vm.expect_revert("reservation payer or request owner only"):
         rhizome.release_pair("batch-1", "alpha", "beta")
     with direct_vm.expect_revert("active payer reservation"):
         rhizome.assess_pair("batch-1", "alpha", "beta")

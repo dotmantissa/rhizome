@@ -6,6 +6,7 @@ certifies independent evidence origins. A certificate never creates an event
 verdict. This consumer requires at least three certified origins.
 """
 from genlayer import *
+from genlayer.py.public_abi import StorageType
 import json
 import hashlib
 import re
@@ -82,6 +83,8 @@ class EventResolver(gl.Contract):
         self._owner()
         require(type(minimum_count) is int and MINIMUM <= minimum_count <= 6, "consumer minimum count")
         key = self._policy_key(policy_id, revision)
+        policy = gl.get_contract_at(self.rhizome).view(state=StorageType.LATEST_FINAL).get_policy(policy_id, revision)
+        require(minimum_count >= policy["required_count"], "consumer threshold below source policy")
         config = {"policy_id": policy_id, "policy_revision": revision, "minimum_count": minimum_count,
                   "unresolved_consequence": UNRESOLVED_CONSEQUENCE}
         if key in self.configs:
@@ -103,6 +106,9 @@ class EventResolver(gl.Contract):
         require(type(expected["generation"]) is int and 1 <= expected["generation"] < (1 << 64), "generation bounds")
         key = self._policy_key(expected["policy_id"], expected["policy_revision"])
         require(key in self.configs, "policy not configured")
+        batch = gl.get_contract_at(self.rhizome).view(state=StorageType.LATEST_FINAL).get_batch(expected["request_id"])
+        require(expected == {**batch["envelope"], "batch_digest": batch["batch_digest"]}, "binding differs from finalized batch")
+        require(gl.get_contract_at(self.rhizome).view().is_current(expected["request_id"])["current"], "stale request binding")
         consequence_value = read_json(consequence, 2048)
         require(set(consequence_value) == {"subject_id", "action", "value"} and consequence_value["subject_id"] == expected["subject_id"]
                 and consequence_value["action"] == ACTION and type(consequence_value["value"]) is str and 1 <= len(consequence_value["value"]) <= 512, "consequence schema")
@@ -155,6 +161,11 @@ class EventResolver(gl.Contract):
             return self._ack(operation_id, delivery_hash, "STALE")
         current = gl.get_contract_at(self.rhizome).view().is_current(request_id)
         if not current["current"] or current["batch_digest"] != certificate["batch_digest"]:
+            finalized = gl.get_contract_at(self.rhizome).view(state=StorageType.LATEST_FINAL).is_current(request_id)
+            if finalized["current"] and finalized["batch_digest"] == certificate["batch_digest"]:
+                # Tentative restrictions may be appealed. Keep the same delivery
+                # retryable instead of permanently acknowledging a transient refusal.
+                return {"operation_id": operation_id, "delivery_digest": delivery_hash, "outcome": "DEFERRED"}
             self.states[subject] = canonical({"request_id": request_id, "generation": certificate["generation"],
                                               "status": "QUARANTINED", "permitted": False, "unresolved": True})
             return self._ack(operation_id, delivery_hash, "QUARANTINED")
@@ -205,10 +216,11 @@ class EventResolver(gl.Contract):
         require(subject_id in self.states, "unknown subject")
         state = json.loads(self.states[subject_id])
         current = gl.get_contract_at(self.rhizome).view().is_current(state["request_id"])
-        if not current["current"]:
+        finalized = gl.get_contract_at(self.rhizome).view(state=StorageType.LATEST_FINAL).is_current(state["request_id"])
+        if not finalized["current"]:
             state.update({"permitted": False, "status": "QUARANTINED", "unresolved": True})
             self.states[subject_id] = canonical(state)
-        return state
+        return {**state, "permitted": state["permitted"] and current["current"], "current_metadata": current}
 
     @gl.public.view
     def get_subject(self, subject_id: str) -> dict:
