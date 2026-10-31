@@ -1,0 +1,306 @@
+"""Audit preserved Studio artifacts and summarize measured execution.
+
+Run with RHIZOME_RUN=<run> python -m scripts.verification_report. This reads
+local replay artifacts only. --partial permits an unfinished run for diagnosis.
+"""
+import argparse
+import ast
+import base64
+import hashlib
+import itertools
+import json
+from pathlib import Path
+import statistics
+import rlp
+from genlayer_py.abi import calldata
+from genlayer_py.contracts.utils import make_calldata_object
+
+from scripts.studio import ROOT, VERIFICATION, agreeing_validators, canonical, digest, successful, write_json
+
+EXPECTED_TESTS = {
+    "tests/integration/test_studio.py::" + name for name in (
+        "test_01_three_independent_measurements_and_shared_infrastructure",
+        "test_02_insurance_uses_separate_policy_and_key",
+        "test_03_copied_wire_reports_refuse_event_resolution",
+        "test_04_unknown_ownership_retry_exhaustion_refuses_insurance",
+        "test_05_parent_company_and_injected_instruction[hidden-parent-names0-SHARED_CONTROL]",
+        "test_05_parent_company_and_injected_instruction[injected-report-names1-COPY_OR_DERIVATION]",
+        "test_06_complete_six_source_matrix",
+        "test_07_duplicate_reordered_and_forged_callbacks",
+        "test_08_source_revision_and_quarantine_at_action_time",
+        "test_09_treasury_accounting_and_owner_payout",
+    )
+} | {"tests/integration/test_source_changes.py::test_changed_public_bytes_cannot_certify_origins"}
+
+
+def leader(receipt):
+    return next(item for item in receipt.get("consensus_data", {}).get("leader_receipt", [])
+                if item.get("mode", "leader") == "leader")
+
+
+def validator_addresses(receipt):
+    return sorted({item.get("node_config", {}).get("address") for item in agreeing_validators(receipt)
+                   if item.get("node_config", {}).get("address")})
+
+
+def timing_summary(values):
+    return {"samples": len(values), "min": min(values), "median": statistics.median(values),
+            "max": max(values)} if values else None
+
+
+def execution_observations(receipt):
+    """Retain historical roles without recounting carried-over snapshots."""
+    snapshots = []
+    for index, round_result in enumerate(receipt.get("consensus_history", {}).get("consensus_results", [])):
+        label = str(round_result["consensus_round"])
+        if not label.isdigit():
+            label = str(index) + ":" + label
+        snapshots.extend((label, item) for item in round_result.get("leader_result", []) + round_result.get("validator_results", []))
+    data = receipt.get("consensus_data", {})
+    snapshots.extend(("current", item) for item in data.get("leader_receipt", []) + data.get("validators", []))
+    observations = {}
+    for label, participant in snapshots:
+        key = digest(participant)
+        observation = observations.setdefault(key, {"observation_id": key, "rounds": [], "receipt": participant})
+        if label not in observation["rounds"]:
+            observation["rounds"].append(label)
+    return list(observations.values())
+
+
+def check_replay_input(receipt, payload):
+    """Bind exported inputs to the actual sender, value and GenVM calldata."""
+    assert receipt["from_address"] == payload["sender"], "replay signer differs from receipt"
+    assert int(receipt["value"]) == payload["value"], "replay value differs from receipt"
+    encoded = rlp.decode(bytes.fromhex(receipt["tx_data"].removeprefix("0x")))
+    assert encoded[-1] == b"\x00" and not receipt["leader_only"], "full consensus required"
+    if payload["code_sha256"] is not None:
+        assert len(encoded) == 3 and hashlib.sha256(encoded[0]).hexdigest() == payload["code_sha256"], "deployment source differs"
+        decoded = calldata.decode(encoded[1])
+        assert decoded == make_calldata_object(method=None, args=payload["args"], kwargs=None), "constructor inputs differ"
+    else:
+        assert receipt["to_address"] == payload["address"], "replay destination differs from receipt"
+        assert len(encoded) == 2 and calldata.decode(encoded[0]) == make_calldata_object(method=payload["method"], args=payload["args"], kwargs=None), "method inputs differ"
+
+
+def report(partial=False):
+    deployment = json.loads((VERIFICATION / "deployment.json").read_text())
+    outcomes_path = VERIFICATION / "integration-results.json"
+    outcomes = json.loads(outcomes_path.read_text()) if outcomes_path.exists() else {}
+    complete = bool(outcomes.get("complete")) and set(outcomes.get("expected_tests", [])) == EXPECTED_TESTS and all(
+        outcomes.get("tests", {}).get(name, {}).get("outcome") == "passed" for name in outcomes["expected_tests"])
+    if not partial:
+        assert complete, "hosted suite is incomplete; use --partial only for diagnosis"
+    for name, contract in deployment["contracts"].items():
+        assert hashlib.sha256((ROOT / "contracts" / (name + ".py")).read_bytes()).hexdigest() == contract["code_sha256"], name
+    receipts = {path.stem: json.loads(path.read_text()) for path in (VERIFICATION / "receipts").glob("*.json")}
+    hashes = {receipt["hash"] for receipt in receipts.values()}
+    expected_refusals = {"action-resolver-refused", "action-insurance-refused", "forged-eoa-callback",
+                         "stale-source-action", "integer-bound-policy", "unauthorized-treasury-payout"}
+    for name, contract in deployment["contracts"].items():
+        receipt = receipts["deploy-" + name]
+        assert receipt["hash"] == contract["deployment_tx"] and successful(receipt), name
+        assert len(validator_addresses(receipt)) >= 2, name + ": independent deployment validators missing"
+    assessments = []
+    protocol_refusals = []
+    expected_failures = []
+    all_addresses = set()
+    participant_times = []
+    token_observations = []
+    for name, receipt in sorted(receipts.items()):
+        assert receipt["status_name"] == "FINALIZED", name
+        if not partial:
+            for child in receipt.get("triggered_transactions", []):
+                child_hash = child if isinstance(child, str) else child.get("hash", child.get("tx_id"))
+                assert child_hash in hashes, name + ": finalized child receipt missing"
+        protocol_refused = receipt.get("result_name") not in (None, "MAJORITY_AGREE")
+        if protocol_refused:
+            assert name.startswith("assess-insurance-unresolved-alpha-unknown-"), name + ": unexpected protocol refusal"
+            assert receipt["result_name"] in ("MAJORITY_DISAGREE", "NO_MAJORITY"), name
+            attempt = int(name.rsplit("-", 1)[1])
+            assert attempt in (1, 2, 3), name
+            release = receipts.get("release-insurance-unresolved-" + str(attempt))
+            if not partial:
+                assert release is not None and successful(release), name + ": payer release missing"
+            protocol_refusals.append({"operation": name, "transaction": receipt["hash"],
+                                      "result_name": receipt["result_name"], "paid_attempt": attempt,
+                                      "payer_release_transaction": release["hash"] if release else None,
+                                      "protocol_rounds": receipt.get("num_of_rounds"),
+                                      "rotation_count": receipt.get("rotation_count")})
+        elif not successful(receipt):
+            if not partial:
+                assert name in expected_refusals, name + ": unexpected failed execution"
+            expected_failures.append({"operation": name, "transaction": receipt["hash"],
+                                      "error": leader(receipt).get("genvm_result"),
+                                      "result": leader(receipt).get("result")})
+        if not name.startswith("assess-"):
+            continue
+        # History retains rotated validators and carried-over leader snapshots.
+        observations = execution_observations(receipt)
+        participants = [value["receipt"] for value in observations]
+        participant_times.extend(item["processing_time"] for item in participants if isinstance(item.get("processing_time"), (int, float)))
+        for observation in observations:
+            participant = observation["receipt"]
+            telemetry = participant.get("execution_stats") or {}
+            for provider, tokens in telemetry.get("llm", {}).get("tokens", {}).items():
+                token_observations.append({"operation": name, "mode": participant["mode"],
+                                           "observation_id": observation["observation_id"], "rounds": observation["rounds"],
+                                           "address": participant.get("node_config", {}).get("address"),
+                                           "provider": provider, **tokens})
+        if protocol_refused:
+            continue  # Leader output never qualifies as an accepted assessment.
+        assert successful(receipt), name + ": semantic execution failed"
+        addresses = validator_addresses(receipt)
+        assert len(addresses) >= 2, name + ": fewer than two independent agreeing validators"
+        all_addresses.update(addresses)
+        readable = leader(receipt).get("result", {}).get("payload", {}).get("readable")
+        decision = json.loads(readable) if readable else None
+        assert decision is not None, name + ": material return missing"
+        if name.startswith("assess-insurance-unresolved-"):
+            assert decision["available"] and decision["relation"] == "UNKNOWN", name + ": semantic unknown evidence required"
+            assert not decision["control_verified"] and {"UNKNOWN_CONTROL", "UNKNOWN_ANCESTRY"} <= set(decision["rule_ids"]), name + ": unknown ownership/ancestry not established"
+        assessments.append({"operation": name, "transaction": receipt["hash"], "decision": decision,
+                            "independent_agreeing_validators": addresses,
+                            "protocol_rounds": receipt.get("num_of_rounds"), "rotation_count": receipt.get("rotation_count"),
+                            "participants": [{"mode": item["mode"], "address": item.get("node_config", {}).get("address"),
+                                              "observation_id": observation["observation_id"], "rounds": observation["rounds"],
+                                              "vote": item.get("vote"), "execution_result": item.get("execution_result"),
+                                              "processing_time_ms": item.get("processing_time"), "execution_stats": item.get("execution_stats")}
+                                             for observation in observations for item in [observation["receipt"]]]})
+    # Reconstruct the exact application prompt from committed fixture bytes and
+    # the public journal. No web/model execution or output is simulated here.
+    journal_path = VERIFICATION / "live-journal.jsonl"
+    replay_path = VERIFICATION / "operation-inputs.json"
+    if journal_path.exists():
+        journal = [json.loads(line) for line in journal_path.read_text().splitlines()]
+        write_json(replay_path, {"classification": "PUBLIC SIGNER ADDRESSES AND EXACT TRANSACTION INPUTS",
+                                 "operations": [row for row in journal if row["event"] in ("INTENT", "SUBMITTED")]})
+    else:
+        journal = json.loads(replay_path.read_text())["operations"]
+    intents = {row["operation"]: row["payload"] for row in journal if row["event"] == "INTENT"}
+    for operation, receipt in receipts.items():
+        if operation in intents:
+            check_replay_input(receipt, intents[operation])
+    if not partial:
+        assert expected_refusals <= set(receipts), "expected action/authority refusal receipts missing"
+    for refusal in protocol_refusals:
+        attempt = refusal["paid_attempt"]
+        reservation = receipts["reserve-insurance-unresolved-alpha-unknown-" + str(attempt)]
+        held = json.loads(leader(reservation)["result"]["payload"]["readable"])
+        assert successful(reservation) and held["attempt"] == attempt and held["status"] == "PENDING"
+        assert held["payer"] == intents[refusal["operation"]]["sender"]
+        release = intents.get("release-insurance-unresolved-" + str(attempt))
+        if release:
+            assert release["sender"] == held["payer"] and release["method"] == "release_pair"
+            assert release["args"] == ["insurance-unresolved", "alpha", "unknown"]
+        elif not partial:
+            raise AssertionError("payer release input missing")
+    if not partial:
+        assert any(item["operation"].startswith("assess-insurance-unresolved-") for item in assessments), "genuine accepted unknown assessment missing"
+        for attempt in range(1, 4):
+            reservation = receipts["reserve-insurance-unresolved-alpha-unknown-" + str(attempt)]
+            held = json.loads(leader(reservation)["result"]["payload"]["readable"])
+            assert successful(reservation) and held["attempt"] == attempt
+    certificates, actions = [], []
+    for operation, receipt in sorted(receipts.items()):
+        intent = intents.get(operation)
+        if not intent or not successful(receipt):
+            continue
+        readable = leader(receipt).get("result", {}).get("payload", {}).get("readable")
+        if intent["method"] in ("seal_batch", "resolve_unavailable"):
+            certificate = json.loads(readable)["sealed_result"]
+            request_id = certificate["request_id"]
+            body = json.loads((VERIFICATION / "requests" / (request_id + ".json")).read_text())
+            assert all(certificate[key] == value for key, value in body["envelope"].items()), operation
+            assert certificate["source_contract"] == deployment["contracts"]["rhizome"]["address"], operation
+            assert certificate["certificate_digest"] == digest({key: value for key, value in certificate.items() if key != "certificate_digest"}), operation
+            ids = sorted(source["source_id"] for source in body["sources"])
+            matrix = certificate["relation_matrix"]
+            complete_matrix = set(matrix) == {a + "|" + b for a, b in itertools.combinations(ids, 2)}
+            assert certificate["coverage_complete"] == complete_matrix, operation
+            if certificate["lifecycle_status"] == "SEALED":
+                assert complete_matrix and not certificate["unresolved"], operation
+                # Independent specification by combinations, distinct from the
+                # contract's bitmask enumeration and retained test outcomes.
+                best = next(list(candidate) for size in range(len(ids), -1, -1)
+                            for candidate in itertools.combinations(ids, size)
+                            if all(matrix[a + "|" + b]["relation"] == "INDEPENDENT"
+                                   for a, b in itertools.combinations(candidate, 2)))
+                assert certificate["certified_subset"] == best, operation
+                assert certificate["certified_origin_count"] == len(best), operation
+                assert all(pair["available"] and pair["scope_verified"] and pair["control_verified"]
+                           for pair in matrix.values()), operation
+                assert certificate["threshold_met"] == (len(best) >= certificate["required_count"]), operation
+            else:
+                assert certificate["lifecycle_status"] == "UNRESOLVED" and certificate["unresolved"], operation
+                assert certificate["certified_subset"] == [] and certificate["certified_origin_count"] == 0, operation
+                assert not certificate["threshold_met"], operation
+            certificates.append({"operation": operation, "transaction": receipt["hash"],
+                                 "request_id": request_id, "status": certificate["lifecycle_status"],
+                                 "certified_subset": certificate["certified_subset"],
+                                 "certified_origin_count": certificate["certified_origin_count"],
+                                 "threshold_met": certificate["threshold_met"],
+                                 "certificate_digest": certificate["certificate_digest"]})
+        elif intent["method"] == "apply_action":
+            action = json.loads(readable)
+            assert action["subject_id"] == intent["args"][0] and action["operation_id"] == intent["args"][1], operation
+            consumer_name = "event_resolver" if action["action"] == "RESOLVED" else "insurance_gate"
+            assert action["action"] in ("RESOLVED", "UNDERWRITING_ENABLED"), operation
+            assert intent["address"] == deployment["contracts"][consumer_name]["address"], operation
+            assert intent["sender"] == deployment["contracts"][consumer_name]["deployer"], operation
+            actions.append({"transaction": receipt["hash"], "consumer": consumer_name, **action})
+    catalog_path = VERIFICATION / "public-evidence.json"
+    catalog = json.loads(catalog_path.read_text())["catalog"] if catalog_path.exists() else {}
+    tree = ast.parse((ROOT / "contracts" / "rhizome.py").read_text())
+    evaluate = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "evaluate_pair")
+    instructions = next(ast.literal_eval(node.value) for node in evaluate.body if isinstance(node, ast.Assign)
+                        and any(isinstance(target, ast.Name) and target.id == "instructions" for target in node.targets))
+    budgets = []
+    for item in assessments + protocol_refusals:
+        payload = intents[item["operation"]]
+        request_id, left_id, right_id = payload["args"]
+        request = json.loads((VERIFICATION / "requests" / (request_id + ".json")).read_text())
+        policy_id = request["envelope"]["policy_id"]
+        policy_payload = intents["policy-" + policy_id]
+        policy = {"policy_id": policy_id, "revision": 1, "owner": policy_payload["sender"],
+                  "independence_definition": json.loads(policy_payload["args"][1]), "required_count": policy_payload["args"][2]}
+        if left_id not in catalog or right_id not in catalog:
+            continue  # The changing-byte task has no semantic model prompt.
+        left, right = catalog[left_id]["source"], catalog[right_id]["source"]
+        records = {record["record_id"]: record for record in [left, right, catalog[left_id]["authority"]["control_record"], catalog[right_id]["authority"]["control_record"]]}
+        packet = []
+        for record in sorted(records.values(), key=lambda value: value["record_id"]):
+            assert record["url"].startswith("https://httpbingo.org/base64/"), "unrecognized fixture byte source"
+            raw = base64.b64decode(record["url"].split("/base64/", 1)[1], validate=True)
+            assert len(raw) == record["size_bytes"] and hashlib.sha256(raw).hexdigest() == record["sha256"]
+            packet.append({"record_id": record["record_id"], "sha256": record["sha256"], "text": raw.decode("utf-8")})
+        prompt = instructions + "\nPOLICY=" + canonical(policy) + "\nLEFT=" + canonical(left) + "\nRIGHT=" + canonical(right) + "\nRECORDS=" + canonical(packet)
+        budgets.append({"operation": item["operation"], "records": len(records),
+                        "raw_packet_bytes": sum(value["size_bytes"] for value in records.values()),
+                        "application_prompt_utf8_bytes": len(prompt.encode("utf-8")),
+                        "canonical_decision_utf8_bytes": len(canonical(item["decision"]).encode("utf-8")) if item.get("decision") else None})
+    summary = {"complete": complete, "network": deployment["network"], "chain_id": deployment["chain_id"],
+               "runner": deployment["runner"], "source_commit": deployment["source_commit"],
+               "hosted_tests_passed": sum(value["outcome"] == "passed" for value in outcomes.get("tests", {}).values()),
+               "expected_hosted_tests": len(outcomes.get("expected_tests", [])), "finalized_receipt_files": len(receipts),
+               "distinct_finalized_transactions": len({value["hash"] for value in receipts.values()}),
+               "semantic_assessments": len(assessments), "independent_semantic_validator_addresses": sorted(all_addresses),
+               "finalized_protocol_refusals": protocol_refusals,
+               "model_assessments_with_available_evidence": sum(item["decision"]["available"] for item in assessments),
+               "retrieval_only_assessments": sum(not item["decision"]["available"] for item in assessments),
+               "verified_certificates": certificates, "verified_consumer_actions": actions,
+               "participant_processing_time_ms": timing_summary(participant_times),
+               "reported_provider_input_tokens": timing_summary([value["input"] for value in token_observations if isinstance(value.get("input"), int)]),
+               "reported_provider_output_tokens": timing_summary([value["output"] for value in token_observations if isinstance(value.get("output"), int)]),
+               "token_usage_observations": token_observations,
+               "fixture_packet_bytes": timing_summary([value["raw_packet_bytes"] for value in budgets]),
+               "fixture_application_prompt_bytes": timing_summary([value["application_prompt_utf8_bytes"] for value in budgets]),
+               "bounds_measurements": budgets, "semantic_receipts": assessments, "refused_execution_receipts": expected_failures,
+               "measurement_limits": "Fixture prompt bytes are reconstructed exactly from the pinned source and committed inputs. Processing times include distinct serialized execution observations from round history and current roles, including leader self-validation, dissent and errors; identical carried-over snapshots are counted once and retain their round references. These are recorded observations, not unique provider request IDs or model-only latency. The application bounds one model evaluation per VM attempt, while host/protocol retries may repeat attempts. Provider token telemetry may include reasoning or repeated instrumentation and does not establish distinct billable calls or total spending. Missing telemetry is not counted as zero. Whole-process memory is not exposed. Small fixture measurements do not qualify maximum-sized packet throughput."}
+    write_json(VERIFICATION / "verification-summary.json", summary)
+    return {key: value for key, value in summary.items() if key not in ("bounds_measurements", "semantic_receipts", "refused_execution_receipts", "token_usage_observations", "verified_certificates", "verified_consumer_actions")}
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--partial", action="store_true")
+    print(json.dumps(report(parser.parse_args().partial), indent=2))
