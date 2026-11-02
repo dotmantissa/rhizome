@@ -15,7 +15,8 @@ import subprocess
 import time
 import requests
 from eth_account import Account
-from genlayer_py import create_client
+from eth_utils import keccak
+from genlayer_py.client import GenLayerClient
 from genlayer_py.chains import studionet
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,7 +139,9 @@ class Studio:
 
     def client(self, role="deployer"):
         if role not in self.clients:
-            c = create_client(chain=studionet, account=self.accounts[role])
+            # Install bounded transport before SDK initialization: create_client()
+            # performs an otherwise unbounded consensus-configuration RPC first.
+            c = GenLayerClient(chain_config=studionet, account=self.accounts[role])
             def paced(method, params):
                 result = None
                 for attempt in range(4):
@@ -147,6 +150,12 @@ class Studio:
                         time.sleep(gap)
                     self.last_rpc = time.monotonic()
                     try:
+                        if method == "eth_sendRawTransaction" and attempt == 0:
+                            # Persist the public transaction ID before an ambiguous
+                            # timeout/502 can hide a successful broadcast. Never
+                            # journal the signed bytes or silently replace a write.
+                            self.log({"event": "SEND_ATTEMPT", "operation": self.current_operation,
+                                      "ethereum_hash": "0x" + keccak(hexstr=params[0]).hex()})
                         response = requests.post(c.provider.url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=(10, 45))
                         if response.status_code == 429:
                             if attempt == 3:
@@ -168,6 +177,7 @@ class Studio:
                     self.log({"event": "BROADCAST", "operation": self.current_operation, "ethereum_hash": result["result"]})
                 return result
             c.provider.make_request = paced
+            c.initialize_consensus_smart_contract()
             self.clients[role] = c
         return self.clients[role]
 
@@ -216,7 +226,7 @@ class Studio:
         old = [r for r in self.records if r.get("operation") == label]
         intents = [r for r in old if r["event"] == "INTENT"]
         if intents:
-            assert intents[0]["payload_digest"] == payload_digest, "journal operation conflicts with changed input: " + label
+            assert all(row["payload_digest"] == payload_digest for row in intents), "journal operation conflicts with changed input: " + label
         finalized = [r for r in old if r["event"] == "FINALIZED"]
         if finalized:
             saved = json.loads((ROOT / finalized[-1]["receipt"]).read_text())
@@ -226,9 +236,11 @@ class Studio:
         submitted = [r for r in old if r["event"] == "SUBMITTED"]
         if submitted:
             return self.wait(submitted[-1]["tx"], label, expected_error) if wait_for_finality else submitted[-1]["tx"]
-        broadcasts = [r for r in old if r["event"] == "BROADCAST"]
+        broadcasts = [r for r in old if r["event"] in ("BROADCAST", "SEND_ATTEMPT")]
         if broadcasts:
-            # Recover consensus ID from the already-broadcast Ethereum receipt.
+            # A saved attempt may have reached the server despite a lost response.
+            # If its receipt is absent, propagate the lookup error for reconciliation
+            # rather than signing a replacement or charging another reservation.
             eth_receipt = c.w3.eth.get_transaction_receipt(broadcasts[-1]["ethereum_hash"])
             event = c.w3.eth.contract(abi=c.chain.consensus_main_contract["abi"]).get_event_by_name("NewTransaction")
             from web3.logs import DISCARD
@@ -239,7 +251,9 @@ class Studio:
             return self.wait(tx, label, expected_error) if wait_for_finality else tx
         nonce = c.get_current_nonce(address=self.accounts[role].address)
         if intents:
-            assert nonce == intents[0]["nonce"], "unreconciled nonce after interrupted broadcast; inspect sender transaction history before replay"
+            # A manually reconciled intent preserves the original history and
+            # identical payload while recording the newly verified sender nonce.
+            assert nonce == intents[-1]["nonce"], "unreconciled nonce after interrupted broadcast; inspect sender transaction history before replay"
         else:
             self.log({"event": "INTENT", "operation": label, "payload": payload, "payload_digest": payload_digest, "nonce": nonce})
         self.current_operation = label

@@ -24,7 +24,8 @@ def transport(monkeypatch, tmp_path):
             raise RuntimeError("RPC error")
 
     provider._raise_on_error = raise_on_error
-    monkeypatch.setattr(module, "create_client", lambda **kwargs: SimpleNamespace(provider=provider))
+    monkeypatch.setattr(module, "GenLayerClient", lambda **kwargs: SimpleNamespace(
+        provider=provider, initialize_consensus_smart_contract=lambda: None))
     monkeypatch.setattr(module.time, "sleep", sleeps.append)
     instance = module.Studio.__new__(module.Studio)
     instance.accounts = {"deployer": object()}
@@ -39,6 +40,7 @@ def transport(monkeypatch, tmp_path):
         responses = iter(responses)
 
         def post(url, **kwargs):
+            assert kwargs["timeout"] == (10, 45)
             calls.append(kwargs["json"])
             response = next(responses)
             if isinstance(response, Exception):
@@ -46,7 +48,7 @@ def transport(monkeypatch, tmp_path):
             return response
 
         monkeypatch.setattr(module.requests, "post", post)
-        return instance.client().provider.make_request(method, ["synthetic-signed-bytes"])
+        return instance.client().provider.make_request(method, ["0x010203"])
 
     return instance, run, calls, sleeps
 
@@ -65,14 +67,17 @@ def test_explicit_rate_refusal_retries_identical_signed_request(transport, refus
     assert run([refusal, response()])["result"] == "synthetic-transaction-hash"
     assert len(calls) == 2 and calls[0] == calls[1]
     assert sleeps == [60]
-    assert [row["event"] for row in instance.records] == ["RATE_LIMITED", "BROADCAST"]
+    assert [row["event"] for row in instance.records] == ["SEND_ATTEMPT", "RATE_LIMITED", "BROADCAST"]
 
 
 def test_ambiguous_write_timeout_never_rebroadcasts(transport):
     instance, run, calls, _ = transport
     with pytest.raises(requests.Timeout):
         run([requests.Timeout("synthetic timeout"), response()])
-    assert len(calls) == 1 and instance.records == []
+    assert len(calls) == 1
+    assert instance.records == [{"event": "SEND_ATTEMPT", "operation": "synthetic-write",
+                                 "ethereum_hash": "0x" + module.keccak(hexstr="0x010203").hex(),
+                                 "recorded_at": instance.records[0]["recorded_at"]}]
 
 
 def test_read_timeout_can_retry(transport):
@@ -81,12 +86,105 @@ def test_read_timeout_can_retry(transport):
     assert len(calls) == 2 and sleeps == [5]
 
 
+def test_consensus_initialization_uses_bounded_read_transport(transport, monkeypatch):
+    instance, run, calls, sleeps = transport
+    client_factory = module.GenLayerClient
+
+    def initialize_client(**kwargs):
+        client = client_factory(**kwargs)
+        client.initialize_consensus_smart_contract = lambda: client.provider.make_request(
+            "sim_getConsensusContract", ["ConsensusMain"])
+        return client
+
+    monkeypatch.setattr(module, "GenLayerClient", initialize_client)
+    run([requests.Timeout("synthetic initialization timeout"), response(), response()])
+    assert [call["method"] for call in calls] == [
+        "sim_getConsensusContract", "sim_getConsensusContract", "eth_sendRawTransaction"]
+    assert sleeps == [5]
+
+
+def test_ambiguous_write_502_preserves_hash_without_retry(transport):
+    instance, run, calls, _ = transport
+    with pytest.raises(requests.HTTPError):
+        run([response(502), response()])
+    assert len(calls) == 1
+    assert [row["event"] for row in instance.records] == ["SEND_ATTEMPT"]
+    assert instance.records[0]["ethereum_hash"] == "0x" + module.keccak(hexstr="0x010203").hex()
+    assert "0x010203" not in instance.journal.read_text()
+
+
+@pytest.mark.parametrize("receipt_available", [True, False])
+def test_signed_attempt_recovers_original_receipt_or_stops_without_replacement(transport, receipt_available):
+    instance, _, _, _ = transport
+    instance.accounts["deployer"] = SimpleNamespace(address="synthetic-sender")
+    payload = {"address": "synthetic-contract", "method": "reserve_pair", "args": ["request"],
+               "sender": "synthetic-sender", "value": 1, "code_sha256": None}
+    instance.records.extend([
+        {"event": "INTENT", "operation": "recover", "payload_digest": module.digest(payload), "nonce": 7},
+        {"event": "SEND_ATTEMPT", "operation": "recover", "ethereum_hash": "synthetic-eth-hash"},
+    ])
+    lookups = []
+
+    def get_receipt(tx):
+        lookups.append(tx)
+        if not receipt_available:
+            from web3.exceptions import TransactionNotFound
+            raise TransactionNotFound("still unknown")
+        return {"status": 1}
+
+    event = SimpleNamespace(process_receipt=lambda receipt, discard: [{"args": {"txId": "original-consensus-id"}}])
+    eth = SimpleNamespace(get_transaction_receipt=get_receipt,
+                          contract=lambda **kwargs: SimpleNamespace(get_event_by_name=lambda name: event))
+    client = SimpleNamespace(w3=SimpleNamespace(eth=eth, to_hex=lambda value: value),
+                             chain=SimpleNamespace(consensus_main_contract={"abi": []}))
+    instance.client = lambda role="deployer": client
+    if receipt_available:
+        assert instance.submit("recover", "synthetic-contract", "reserve_pair", ["request"],
+                               value=1, wait_for_finality=False) == "original-consensus-id"
+        assert instance.records[-1]["event"] == "SUBMITTED" and instance.records[-1]["recovered"]
+    else:
+        from web3.exceptions import TransactionNotFound
+        with pytest.raises(TransactionNotFound):
+            instance.submit("recover", "synthetic-contract", "reserve_pair", ["request"], value=1)
+        assert instance.records[-1]["event"] == "SEND_ATTEMPT"
+    assert lookups == ["synthetic-eth-hash"]
+
+
+@pytest.mark.parametrize("reconciled", [True, False])
+def test_nonce_drift_requires_an_identical_reconciled_intent(transport, reconciled):
+    instance, _, _, _ = transport
+    instance.accounts["deployer"] = SimpleNamespace(address="synthetic-sender")
+    payload = {"address": "synthetic-contract", "method": "reserve_pair", "args": ["request"],
+               "sender": "synthetic-sender", "value": 1, "code_sha256": None}
+    original = {"event": "INTENT", "operation": "recover", "payload_digest": module.digest(payload), "nonce": 7}
+    instance.records.append(original)
+    if reconciled:
+        instance.records.append({**original, "nonce": 9, "reconciles_nonce": 7})
+    writes = []
+
+    def write(**kwargs):
+        writes.append(kwargs)
+        return "reconciled-tx"
+
+    instance.client = lambda role="deployer": SimpleNamespace(
+        get_current_nonce=lambda **kwargs: 9, write_contract=write)
+    if reconciled:
+        assert instance.submit("recover", "synthetic-contract", "reserve_pair", ["request"],
+                               value=1, wait_for_finality=False) == "reconciled-tx"
+        assert len(writes) == 1
+        assert instance.records[0] == original
+    else:
+        with pytest.raises(AssertionError, match="unreconciled nonce"):
+            instance.submit("recover", "synthetic-contract", "reserve_pair", ["request"], value=1)
+        assert writes == []
+
+
 def test_rate_limit_retries_are_bounded(transport):
     instance, run, calls, sleeps = transport
     with pytest.raises(requests.HTTPError):
         run([response(429) for _ in range(4)])
     assert len(calls) == 4 and sleeps == [60, 60, 60]
-    assert all(row["event"] == "RATE_LIMITED" for row in instance.records)
+    assert [row["event"] for row in instance.records] == ["SEND_ATTEMPT"] + ["RATE_LIMITED"] * 3
 
 
 def test_finalized_receipt_recovery_needs_no_rpc_and_checks_execution(transport, monkeypatch, tmp_path):
@@ -124,7 +222,7 @@ def test_server_reset_delay_is_respected_for_identical_write(transport):
     refused.headers["Retry-After"] = "4"
     run([refused, response()])
     assert calls[0] == calls[1] and sleeps == [5]
-    assert instance.records[0]["retry_delay_seconds"] == 5
+    assert instance.records[1]["retry_delay_seconds"] == 5
 
 
 def test_retry_after_date_and_malformed_header(monkeypatch):
