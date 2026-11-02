@@ -1,5 +1,15 @@
 # Verification record
 
+## Corrected deployment qualification
+
+The current `reviewer-v5` contracts match committed source `92d39d9` byte for byte; all four deployment receipts finalized successfully with independent validators. The working source passes 119 direct tests and 31 client/history tests, including 38 security regressions. All four pinned contract lints pass.
+
+The current [partial report](../verification/reviewer-v5/verification-summary.json) checks 66 finalized transactions and 27 authenticated finality confirmations. No corrected application scenario has completed at this checkpoint, so the release remains unqualified. [Local recovery checks](../verification/reviewer-v5/local-recovery-tests.log) record all 150 passing tests.
+
+The previous `reviewer-v4` run stopped at the hosted synchronous `LATEST_FINAL` timeout and remains unqualified. The current source uses authenticated self-confirmations emitted after each creating parent finalizes, with exact commitment checks and monotonic revision/generation indices. Eight new direct regressions cover forged confirmations, tentative replays, admission/delegation gates, reordered confirmations and confirmation lag.
+
+The complete sixteen-scenario hosted suite is running against these fresh addresses. It includes both adapters' rejected/corrected input handling, three rejected outsider reservations, sponsor revocation/owner recovery, real failed fee transfers/refunds/retries, and hosted latest/finalized snapshot divergence with controlled restoration. The reversible restriction fixture extends the full production source; both consumers use exact release bytes. Controlled restoration is explicitly labelled and does not establish a production appeal. The sections below retain the original `treasury-v3` execution history; those receipts cannot qualify the corrected source.
+
 ## Environment and source identity
 
 The target is hosted StudioNet, chain ID `61999`, RPC `https://studio.genlayer.com/api`. All four contract files pin `py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6`. The deployment artifact records source commit `ac4252b`, exact raw source hashes, constructors, separate owners and finalized deployment transaction IDs.
@@ -75,12 +85,12 @@ The release evidence includes completed substantive hosted consensus, both real 
 
 ## Recoverable deployment corrections
 
-The original live reservation failed before method execution because `reserve_pair` lacked payable SDK metadata. The corrected `payable-v2` reservation finalized successfully, but its treasury transfer to an externally owned account finalized with `NO_MAJORITY` after missing-contract execution errors. These outcomes are preserved in the earlier receipt directories. The current `treasury-v3` deployment uses the payable reservation and an independently deployed `AssessmentTreasury.accept_fee` receiver. Source addresses are immutable; consumers were deployed against the corrected Rhizome address. No failed application scenario is relabelled as successful.
+The original live reservation failed before method execution because `reserve_pair` lacked payable SDK metadata. The corrected `payable-v2` reservation finalized successfully, but its treasury transfer to an externally owned account finalized with `NO_MAJORITY` after missing-contract execution errors. These outcomes are preserved in the earlier receipt directories. The historical `treasury-v3` deployment uses the payable reservation and an independently deployed `AssessmentTreasury.accept_fee` receiver. Source addresses are immutable; consumers were deployed against the corrected Rhizome address. No failed application scenario is relabelled as successful.
 
 The final verification summary is produced with:
 
 ```bash
-RHIZOME_RUN=treasury-v3 .venv/bin/python -m scripts.verification_report
+RHIZOME_RUN=reviewer-v5 .venv/bin/python -m scripts.verification_report
 ```
 
-The report requires all eleven passing hosted scenarios and at least two distinct agreeing validators for each accepted assessment. It verifies finalized child provenance, all three paid unknown reservations and authenticated release of refused consensus, certificate digests/complete matrices/maximal subsets, consumer/action bindings, actual treasury payment and replay, and initial/later public byte commitments. Exported inputs must match receipt senders, values, destinations, decoded GenVM calldata and deployment source bytes. Exact fixture prompts are reconstructed from pinned source and public inputs. It exports public operation inputs to `operation-inputs.json`, which allows the report to run from a fresh checkout without the ignored local journal. `--partial` is a diagnostic option that retains `complete: false`.
+The current report requires all sixteen passing hosted scenarios and at least two distinct agreeing validators for each accepted assessment. It verifies finalized child provenance and exact authenticated finality-confirmation commitments, all three paid unknown reservations and authenticated release of refused consensus, certificate digests/complete matrices/maximal subsets, consumer/action bindings, actual treasury payment and replay, and initial/later public byte commitments. Exported inputs must match receipt senders, values, destinations, decoded GenVM calldata and deployment source bytes. Exact fixture prompts are reconstructed from pinned source and public inputs. It exports public operation inputs to `operation-inputs.json`, which allows the report to run from a fresh checkout without the ignored local journal. `--partial` is a diagnostic option that retains `complete: false`.

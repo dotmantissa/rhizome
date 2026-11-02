@@ -4,6 +4,8 @@ Rhizome adjudicates whether evidence comes from independent production origins. 
 
 The count says how independently evidence was produced. Applications remain responsible for judging an event, pricing risk or choosing another consequence. The included event resolver requires three origins; the independent insurance gate can require two. Both use authenticated messages emitted only after source transactions finalize.
 
+**Release status:** corrected contracts are deployed and byte-verified on StudioNet in `reviewer-v5`, from committed source `92d39d9`. The full 16-scenario hosted security/recovery qualification is in progress. Historical `treasury-v3` receipts qualify only the earlier source; the corrected release uses fresh addresses and evidence.
+
 ## Contract package
 
 | Contract | Purpose | Constructor |
@@ -15,7 +17,7 @@ The count says how independently evidence was produced. Applications remain resp
 
 Each file is independently deployable and pins `py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6`. The supplied Studio deployment uses a one-atto assessment charge to exercise native transfer accounting. Production deployments choose their own payable treasury contract implementing `accept_fee()` and a positive integer charge. The supplied treasury reports collected fees and current balance; its owner can pay another compatible receiver through an idempotent finalized emission.
 
-Studio deployment addresses, exact source hashes, constructor arguments, owners and finalized transaction IDs are recorded in [verification/treasury-v3/deployment.json](verification/treasury-v3/deployment.json). Open the deployed primitive in [GenLayer Studio](https://studio.genlayer.com/?import-contract=0x84453D386fd5f5Cb2956FFcD755fB2649Cd4269f). Verification results and their limits are described in [docs/verification.md](docs/verification.md).
+Studio deployment addresses, exact source hashes, constructor arguments, owners and finalized transaction IDs are recorded in [verification/reviewer-v5/deployment.json](verification/reviewer-v5/deployment.json). Open the deployed primitive in [GenLayer Studio](https://studio.genlayer.com/?import-contract=0x73605186B7E933e41F956ac6C07B6A6ac15d6943). Verification results and their limits are described in [docs/verification.md](docs/verification.md).
 
 ## Consensus boundary
 
@@ -42,13 +44,13 @@ If the distribution omits `ensurepip`, create the environment with `python3 -m v
 
 Direct tests use labelled synthetic web/model fault injection and explicit `direct_vm.run_validator()` probes. They verify state, permissions, bounds, validator rejection and all 32,768 binary independence graphs on six sources. They do not replace hosted consensus verification. The [Studio tests](tests/integration/test_studio.py) execute real deployed contracts, real web retrieval and real model/validator consensus using publicly retrievable, explicitly synthetic records signed by separate configured test principals.
 
-The completed verification passed **73 direct tests, 15 client/history tests and all 11 hosted scenarios**. The strict [receipt report](verification/treasury-v3/verification-summary.json) checks 185 distinct finalized transactions, 24 accepted model assessments, a genuine changing-byte refusal, the complete fifteen-pair matrix and both consumer actions. Final revision/quarantine tests intentionally invalidate earlier positive certificates; their successful historical action receipts remain preserved.
+The earlier deployment passed **73 direct tests, 15 client/history tests and all 11 hosted scenarios**. The corrected working source passes **119 direct tests and 31 client/history tests**; its complete 16-scenario hosted suite is running against the corrected deployment. The historical strict [receipt report](verification/treasury-v3/verification-summary.json) checks 185 distinct finalized transactions, 24 accepted model assessments, a genuine changing-byte refusal, the complete fifteen-pair matrix and both consumer actions. Final revision/quarantine tests intentionally invalidate earlier positive certificates; their successful historical action receipts remain preserved.
 
 ## Builder integration
 
-Start with the [authority and state diagram](docs/architecture.md), [public API and schemas](docs/protocol.md), and [two consumer integration flows](docs/integration.md). [Replayable request files](verification/treasury-v3/requests) and [finalized receipts](verification/treasury-v3/receipts) preserve the exact evidence bindings and network outcomes.
+Start with the [authority and state diagram](docs/architecture.md), [public API and schemas](docs/protocol.md), and [two consumer integration flows](docs/integration.md). [Replayable request files](verification/reviewer-v5/requests) and [finalized receipts](verification/reviewer-v5/receipts) preserve the exact evidence bindings and network outcomes.
 
-Evidence principals attest immutable source revisions. Policy owners define immutable policies. Request owners commit the subject, complete manifest, intended consequence, generation and deadline before evaluation. Consumers independently configure their threshold and approve the exact batch/consequence they accept. Any caller can publish a terminal current certificate after that approval, but only the authenticated Rhizome contract can deliver it to these adapters.
+Evidence principals attest immutable source revisions. Policy owners define immutable policies. Request owners commit the subject, complete manifest, intended consequence, generation and deadline before evaluation. Only the request owner or a sponsor explicitly authorized for that request can reserve and assess pairs. Owners can revoke sponsors and release their holds. Consumers check policy thresholds and exact batch bindings against finalized source records before committing local configuration. Any caller can publish a terminal current certificate after that approval, but only the authenticated Rhizome contract can deliver it to these adapters.
 
 Quarantine is irreversible for a record. A successor source revision or subject generation retains historical records while restricting old actions. Consumers check freshness at action time and retain acknowledgements for duplicate and reordered callbacks. Their view reads provide freshness information; the finalized callback supplies finality evidence.
 

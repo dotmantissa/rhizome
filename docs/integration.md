@@ -8,7 +8,7 @@ The Studio client in `scripts/studio.py` loads signing keys from an external JSO
 
 ```bash
 export RHIZOME_CREDENTIALS_FILE=/secure/rhizome-keys.json
-export RHIZOME_RUN=treasury-v3
+export RHIZOME_RUN=reviewer-v5
 .venv/bin/python -m scripts.studio deploy
 .venv/bin/python -m scripts.studio call \
   --address '<Rhizome address>' --method get_limits
@@ -23,6 +23,8 @@ The deploy command configures the verification deployment with a one-atto fee. F
 3. The request owner builds the complete source/authority manifest and canonical envelope described in [protocol.md](protocol.md), then calls `open_batch`.
 4. Before assessment, each participating consumer owner configures its immutable policy version and locks the returned batch plus its own intended consequence.
 
+Each original policy, authority, source revision and batch write emits `confirm_finalized_record` to Rhizome itself after finalization. Drain that confirmation before submitting dependent operations. The authenticated self message checks the exact record commitment; identical record replays emit no new confirmation. `get_finalized_policy` and `get_finalized_batch` expose only records whose creating parents finalized. Consumers use these proof-backed views for prevalidation. `is_finalized_current` distinguishes confirmed restrictions from tentative changes and confirmation lag (`FINALITY_PENDING`). This avoids synchronous `LATEST_FINAL` reads, which timed out on the hosted Studio deployment. The earlier `reviewer-v4` deployment remains an incomplete compatibility run and cannot qualify this release.
+
 Records must be available through the configured public HTTPS channel, match every raw-byte commitment and span, and substantiate scope, control and production ancestry. URLs, candidate origin labels and matching conclusions are insufficient. The verification fixture uses a public HTTPS byte mirror for explicitly synthetic signed records; the mirror supplies retrieval, not publisher authority. Production integrators must choose their own disclosed authentic evidence and authority configuration.
 
 ## Event resolver
@@ -33,7 +35,7 @@ The `EventResolver` owner chooses an event verdict before semantic assessment. R
 from scripts.studio import Studio, canonical
 
 studio = Studio()
-batch = studio.read(rhizome_address, "get_batch", [request_id])
+batch = studio.read(rhizome_address, "get_finalized_batch", [request_id])
 env = batch["envelope"]
 binding = {**env, "batch_digest": batch["batch_digest"]}
 consequence = {
@@ -54,9 +56,9 @@ bound = studio.submit(
 studio.drain(bound, "resolver-bind-001")
 ```
 
-`configure_policy` emits finalized `register_consumer` to Rhizome. `bind_request` emits finalized `approve_delivery`, committing the consumer's actual consequence separately from the source envelope's locked intended consequence. A secondary consumer can independently approve a different consequence for the same certificate. Both digests are carried and checked; one application's approval grants another application no authority.
+`configure_policy` first checks the finalized source policy and refuses a weaker threshold before writing local state, then emits finalized `register_consumer` to Rhizome. `bind_request` first matches every expected field against the finalized source batch and checks freshness, then emits finalized `approve_delivery`, committing the consumer's actual consequence separately from the source envelope's locked intended consequence. A secondary consumer can independently approve a different consequence for the same certificate. Both digests are carried and checked; one application's approval grants another application no authority.
 
-For every unordered source pair, a payer submits the exact charge with `reserve_pair`, verifies its finalized execution and treasury transfer, then calls `assess_pair` under the same payer. The result must show independently agreeing validators; an accepted lifecycle alone is insufficient. After every pair has a supported decision, call `seal_batch`.
+For every unordered source pair, the request owner or an explicitly authorized sponsor submits the exact charge with `reserve_pair`, verifies its finalized execution and treasury transfer, then calls `assess_pair` under the same payer. The result must show independently agreeing validators; an accepted lifecycle alone is insufficient. After every pair has a supported decision, call `seal_batch`. To authorize another payer, the request owner calls `authorize_assessment_payer(request_id, sponsor_address, True)` in a finalized transaction. Revocation uses `False`; the owner can release a sponsored hold with `release_pair` and reserve the next attempt. Sponsorship is request-specific and consumes the same three-reservation budget.
 
 ```python
 reserved = studio.submit(
@@ -137,7 +139,7 @@ sequenceDiagram
     Consumer->>R: recheck current evidence and generation
 ```
 
-The callback authenticates Rhizome's sender, verifies the certificate/delivery digests and exact local bindings, and records `APPLIED`, `REFUSED`, `STALE` or `QUARANTINED`. Rhizome authenticates the returning consumer acknowledgement. A view never establishes finality. A pending newer local binding immediately restricts the subject; an older callback cannot clear that restriction. Source revision changes and quarantine are checked again when an action is attempted.
+The callback authenticates Rhizome's sender, verifies the certificate/delivery digests and exact local bindings, and records `APPLIED`, `REFUSED`, `STALE` or `QUARANTINED`. Rhizome authenticates the returning consumer acknowledgement. An ordinary freshness view does not establish finality; proof-backed views rely on the authenticated confirmations described above. A callback temporarily blocked by nonfinal source restrictions returns `DEFERRED` without recording or emitting an acknowledgement. Retry the original publication after those restrictions resolve; a finalized restriction still produces `QUARANTINED`. `refresh_subject` records quarantine only from finalized source state and returns effective permission using the latest source state. A pending newer local binding immediately restricts the subject; an older callback cannot clear that restriction. Source revision changes and quarantine are checked again when an action is attempted.
 
 `RHIZOME_RUN` selects a separate deployment and artifact directory. Retain the same value to resume a run; choose a new name for a fresh deployment. Omitting it resumes the original pre-correction run. The `treasury-v3` run contains the payable contract and explicit fee-receiver interface. The original artifacts retain the non-payable reservation failure, and `payable-v2` retains the failed empty-calldata transfer to the deployer account. Never reuse old operation IDs after changing source, signer, value or arguments.
 
@@ -149,28 +151,30 @@ RPC calls are paced at 4.5 seconds, below the hosted 1,000-request hourly limit.
 
 `wait_for_finality=False` returns a broadcast ID for independent operation cohorts. Call `Studio.wait` and verify every receipt before dependent operations. The verifier uses cohorts of at most fifteen, below the hosted pending cap. `Studio.drain` recursively checks emitted child transactions. Neither a journaled broadcast nor an incomplete callback chain counts as a completed application action.
 
-Successful finalized batch and pair returns can be decoded with `finalized_result(receipt)` without an additional state read. The decoder requires finalized, agreed execution and refuses accepted, consensus-refused or execution-failed receipts. `ProtocolFailure` carries the finalized receipt when the network reports a consensus refusal. A temporary `UNDETERMINED` observation is saved and polling continues for the same transaction within the existing polling bound. A canceled transaction stops; no new assessment is automatically submitted. The live driver uses these committed returns and then validates every persisted pair through the sealed matrix. Saved finalized receipts are reused only after checking their transaction ID, lifecycle and execution outcome.
+Successful finalized batch and pair returns can be decoded with `finalized_result(receipt)` without an additional state read. The decoder requires finalized, agreed execution and refuses accepted, consensus-refused or execution-failed receipts. `ProtocolFailure` carries the finalized receipt when the network reports a consensus refusal. A temporary `UNDETERMINED` observation is saved and polling continues for the same transaction within the existing polling bound. A canceled transaction stops; no new assessment is automatically submitted. The live driver uses these committed returns and then validates every persisted pair through the sealed matrix. Saved finalized receipts are reused only after checking their transaction ID, lifecycle and execution outcome. The client durably records the public hash of each signed transaction before sending it. After an ambiguous timeout or HTTP 502, recovery looks up that exact hash and stops if its receipt is unavailable. SDK consensus initialization uses the same paced transport and bounded timeouts. For an older intent without a saved hash, reconcile sender and contract history before appending an identical intent with a verified replacement nonce; retain the original intent and reconciliation evidence.
 
 These returned bindings and decisions are historical snapshots. Query `is_current` when freshness matters; the consumers perform that check again at action time.
 
-Repeat identical publication operations to recover a failed callback while evidence remains current. Conflicting operation reuse is refused. After finalized consensus refusal or an agreed execution failure, inspect `get_pair` and release its held reservation under the payer before a new paid application attempt. The failed attempt still consumes its reservation and fee. Retain the refused receipt and finalized release for audit. After three consumed attempts, a supported exhaustion condition permits `resolve_unavailable`; otherwise expiry or evidence invalidation supplies unresolved recovery. No caller controls protocol finality or validator rotation.
+Repeat identical publication operations to recover a failed callback while evidence remains current. Conflicting operation reuse is refused. After finalized consensus refusal or an agreed execution failure, inspect `get_pair` and release its held reservation under its payer or request owner before a new paid application attempt. The failed attempt still consumes its reservation and fee. Retain the refused receipt and finalized release for audit. After three consumed attempts, a supported exhaustion condition permits `resolve_unavailable`; otherwise expiry or evidence invalidation supplies unresolved recovery. No caller controls protocol finality or validator rotation.
 
 ## Running the executable integrations
 
+The `reviewer-v5` deployment contains the corrected source; `treasury-v3` receipts preserve historical execution. Security scenarios cover three unauthorized reservation attempts, sponsorship revocation and owner recovery, and rejected/corrected configuration and bindings in both adapters. `test_recovery.py` exercises real failed fee transfers, SDK refunds, failed/successful retries and replay with a controlled receiver, and real latest/finalized snapshot divergence with byte-identical consumer contracts. The latter source fixture adds reversible restrictions and accepted probes to the complete production implementation; its controlled restoration does not claim a production appeal. Run the baseline before the recovery fixtures so its treasury accounting measures primary-deployment fees.
+
 ```bash
-RHIZOME_CREDENTIALS_FILE=/secure/rhizome-keys.json RHIZOME_RUN=treasury-v3 \
-  .venv/bin/python -m pytest tests/integration/test_studio.py tests/integration/test_source_changes.py -v -s -x --rhizome-resume
+RHIZOME_CREDENTIALS_FILE=/secure/rhizome-keys.json RHIZOME_RUN=reviewer-v5 \
+  .venv/bin/python -m pytest tests/integration/test_studio.py tests/integration/test_source_changes.py tests/integration/test_audit_security.py tests/integration/test_recovery.py -v -s -x --rhizome-resume
 ```
 
 The suite deploys the actual primitive and adapters, uses distinct owner/principal keys, checks permitted/refused actions for both applications, executes a complete six-source matrix and verifies duplicate/reordered/forged callbacks, source revision invalidation, quarantine and retry exhaustion. Its public records are labelled synthetic; no web, model, contract or callback is mocked. Replay inputs and finalized parent/child receipts are preserved under `verification/<RHIZOME_RUN>`.
 
 The final revision tests intentionally invalidate earlier certificates. Resume an interrupted run from its recorded operation IDs and last completed scenario; replaying positive action tests after their sources have been superseded is expected to fail freshness checks. Use a new deployment and operation namespace for an entirely fresh run. Per-test logs and receipts describe what actually completed.
 
-`--rhizome-resume` retains previously passing scenarios from this run and executes the unfinished scenarios. Omit it to rerun every scenario. The complete gate still requires all eleven scenarios, and the durable outcome history retains earlier failures. The local journal is Git-ignored; the verification report exports public signer addresses, exact operation inputs and transaction IDs to `operation-inputs.json` so published evidence remains independently inspectable.
+`--rhizome-resume` retains previously passing scenarios from this run and executes the unfinished scenarios. Omit it to rerun every scenario. The complete gate requires all sixteen scenarios, and the durable outcome history retains earlier failures. The local journal is Git-ignored; the verification report exports public signer addresses, exact operation inputs and transaction IDs to `operation-inputs.json` so published evidence remains independently inspectable.
 
 ## Assessment treasury
 
-Rhizome emits `accept_fee()` with the exact assessment charge on finalized status. Its treasury address is immutable. The supplied treasury has no privilege over policies, source attestations, certificates or consumer principal. Its deployer owns only the fee account. `get_totals()` returns `owner`, cumulative `received_atto`, and actual `balance_atto`; the received counter excludes returned failed payouts.
+Rhizome emits `accept_fee()` with the exact assessment charge on finalized status. Its treasury address is immutable. If a failed fee child refunds value to Rhizome, inspect `get_limits.retained_fee_balance_atto`; the registry owner can call `retry_treasury_transfer(operation_id, amount_atto)` to forward that retained balance to the same treasury. Identical replay emits no second transfer. Confirm the recovery child and any refund before issuing another operation. An incompatible receiver cannot be repaired by changing the destination; redeploy with a compatible treasury. The supplied treasury has no privilege over policies, source attestations, certificates or consumer principal. Its deployer owns only the fee account. `get_totals()` returns `owner`, cumulative `received_atto`, and actual `balance_atto`; the received counter excludes returned failed payouts.
 
 `payout(operation_id, recipient_address, amount_atto)` requires the treasury owner, no attached value, a nonzero distinct receiver address, a positive integer amount below `2**256`, and sufficient current balance. The recipient must implement payable `accept_fee()`. Repeating identical arguments returns the same record without another emission; conflicting operation reuse fails. `get_payout(operation_id)` returns that record or null. A payout record has status `EMITTED_ON_FINALIZED`; only its successful finalized child receipt establishes recipient payment. Failed child executions are handled by the SDK's inherited refund handler. Inspect the refund and balance before a new payout operation.
 

@@ -76,7 +76,7 @@ The exact batch digest commits `{envelope, manifest}`. The returned batch contai
 
 ## Pair adjudication and certificate
 
-`reserve_pair` requires the exact configured native charge. It durably records payer, operation ID and attempt before semantic execution in a separate transaction. The treasury `accept_fee()` call emits with the charge on finalized status. A treasury is a contract with that payable interface, not an externally owned account. Its child receipt must succeed before treating the fee as received. A failed child can return the charge to Rhizome through the inherited SDK refund handler; it does not erase the committed reservation or charged counter. Choose and verify a compatible receiver before accepting assessments. A model failure cannot undo this already committed attempt. The reservation payer alone can assess or release it. Release frees the reservation, retains the attempt and does not refund the economic charge. Protocol validator rotation is independent of the three paid reservations.
+`reserve_pair` requires the exact configured native charge. It durably records payer, operation ID and attempt before semantic execution in a separate transaction. The treasury `accept_fee()` call emits with the charge on finalized status. A treasury is a contract with that payable interface, not an externally owned account. Its child receipt must succeed before treating the fee as received. A failed child can return the charge to Rhizome through the inherited SDK refund handler; it does not erase the committed reservation or charged counter. Choose and verify a compatible receiver before accepting assessments. `get_limits.retained_fee_balance_atto` exposes the actual Rhizome balance; the registry owner can use `retry_treasury_transfer` to forward retained fees to the immutable treasury. Recovery emits once per operation ID, requires sufficient balance, preserves the gross charge counter, and must be confirmed through the finalized child receipt. An incompatible immutable treasury requires a new deployment; recovery cannot change its address. A model failure cannot undo this already committed attempt. The request owner can reserve directly or authorize a sponsor through `authorize_assessment_payer`. The authorized reservation payer alone can assess it. Its payer or the request owner can release a hold; revoking sponsor authorization prevents further assessment and new reservations. Release frees the reservation, retains the attempt and does not refund the economic charge. Protocol validator rotation is independent of the three paid reservations.
 
 Each complete assessment produces:
 
@@ -101,7 +101,7 @@ The sealed result retains every envelope field and adds `schema_version`, `sourc
 
 ## Public writes
 
-All writes reject attached value except `reserve_pair`. String objects below are canonical serialized JSON. Successful return values are not a substitute for checking transaction execution and finality.
+All writes reject attached value except `reserve_pair` (the inherited SDK refund handler also accepts returned value). String objects below are canonical serialized JSON. Successful return values are not a substitute for checking transaction execution and finality.
 
 | Method and arguments | Permission and behavior |
 | --- | --- |
@@ -109,12 +109,17 @@ All writes reject attached value except `reserve_pair`. String objects below are
 | `register_authority(authority_id, principal_address, channel, url_prefix, control_record)` | Registry owner only. Immutable authority, identical replay allowed. Returns authority. |
 | `attest_source(source_record)` | Registered principal only. Immutable sequential revision, identical replay allowed. Returns source. |
 | `open_batch(request_id, policy_id, source_manifest)` | Anyone can sign a new owned request. Locks current evidence; returns batch. |
-| `reserve_pair(request_id, left_id, right_id, operation_id)` | Anyone can pay and reserve an active pair. Exact fee; maximum three attempts. Returns reservation. |
-| `release_pair(request_id, left_id, right_id)` | Reservation payer only. Retains charged attempt. |
-| `assess_pair(request_id, left_id, right_id)` | Active reservation payer only. Independent semantic consensus; returns pair decision. |
+| `authorize_assessment_payer(request_id, payer_address, authorized)` | Request owner only; grant/revoke a request-specific sponsor. The owner remains authorized. |
+| `retry_treasury_transfer(operation_id, amount_atto)` | Registry owner only; idempotent finalized forwarding of retained fees to the immutable treasury. Returns emission record, not payment confirmation. |
+| `reserve_pair(request_id, left_id, right_id, operation_id)` | Request owner or explicitly authorized sponsor can pay and reserve an active pair. Exact fee; maximum three attempts. Returns reservation. |
+| `release_pair(request_id, left_id, right_id)` | Reservation payer or request owner. Retains charged attempt. |
+| `assess_pair(request_id, left_id, right_id)` | Active reservation payer with current request-owner authorization. Independent semantic consensus; returns pair decision. |
 | `seal_batch(request_id)` | Anyone; complete matrix and no pending assessment. Returns certificate wrapper. |
-| `resolve_unavailable(request_id)` | Anyone; requires expiry, exhausted pair or invalidation. Returns unresolved wrapper. |
+| `resolve_unavailable(request_id)` | Anyone; requires expiry, exhausted pair or finalized evidence invalidation. Tentative restrictions cannot permanently terminate a batch. Returns unresolved wrapper. |
 | `quarantine_record(kind, record_id, revision, reason_digest)` | Source principal/policy owner or registry owner for source/policy; registry owner for request/authority. Irreversible, identical replay allowed. |
+| `confirm_finalized_record(kind, record_id, revision, commitment)` | Authenticated self message only; original record writes emit after finalization. Checks exact immutable record commitment and advances confirmed revision/generation indices monotonically. |
+| `get_finalized_policy(policy_id, revision)` / `get_finalized_batch(request_id)` | Proof-backed views; require the creating record's finalized-parent confirmation before exposing metadata. |
+| `is_finalized_current(request_id)` | Proof-backed freshness; reports confirmed invalidation or `FINALITY_PENDING` while confirmations lag. Tentative changes do not become confirmed restrictions. |
 | `register_consumer(policy_id, revision, minimum_count, unresolved_consequence)` | Called by the consumer contract through its owner-configured finalized emission. Threshold cannot be below source policy; consequence is `REFUSE_RESOLUTION` or `KEEP_RESTRICTED`. |
 | `approve_delivery(request_id, consequence_digest)` | Registered consumer signs exact batch/consequence approval. Conflicting approval is rejected. |
 | `publish_to(request_id, consumer, operation_id)` | Anyone after approval and terminal current certificate. Journals and emits authenticated finalized delivery. Identical replay can retry failed callback. |

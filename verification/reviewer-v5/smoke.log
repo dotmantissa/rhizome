@@ -1,0 +1,38 @@
+RPC rate limited; retrying the same request after 5 seconds
+RPC rate limited; retrying the same request after 2 seconds
+RPC rate limited; retrying the same request after 14 seconds
+policy-event-independence SUBMITTED 0x6886c196f028a86dc721a7492b61eb2eb2557fa4df6fde89187a1e1c38f9324c
+policy-event-independence FINALIZED success 0x6886c196f028a86dc721a7492b61eb2eb2557fa4df6fde89187a1e1c38f9324c
+policy-event-independence-child-0 FINALIZED success 0x7bbe8c9a4bf3e54d469826175f1f72b2afa1e124a6df4a3649e5fb3050d2171b
+RPC rate limited; retrying the same request after 11 seconds
+RPC rate limited; retrying the same request after 2 seconds
+RPC rate limited; retrying the same request after 15 seconds
+Traceback (most recent call last):
+  File "<stdin>", line 10, in <module>
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/scripts/studio.py", line 258, in read
+    result = self.client(role).read_contract(address=address, function_name=method, args=args or [])
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/genlayer_py/client/genlayer_client.py", line 93, in read_contract
+    return read_contract(
+        self=self,
+    ...<7 lines>...
+        sim_config=sim_config,
+    )
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/genlayer_py/contracts/actions.py", line 82, in read_contract
+    enc_result = self.provider.make_request(
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        method="gen_call",
+        ^^^^^^^^^^^^^^^^^^
+        params=[request_params],
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    )["result"]
+    ^
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/scripts/studio.py", line 153, in paced
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 429 Client Error: Too Many Requests for url: https://studio.genlayer.com/api
+configure-resolver-event-independence SUBMITTED 0xfd854363f89f07f7a39f506f05b9d2ece43024129c730460c27037a037d9815a
+configure-resolver-event-independence FINALIZED success 0xfd854363f89f07f7a39f506f05b9d2ece43024129c730460c27037a037d9815a
+configure-resolver-event-independence-child-0 FINALIZED success 0x0673afd02fcacb35eb005ab3603386b25bc6a837ed3b5f7e9c8f6eeb91f2d671
+Authenticated finality/configuration smoke test PASSED
