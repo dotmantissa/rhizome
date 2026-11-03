@@ -52,3 +52,22 @@ def test_native_child_refuses_another_payable_method(native_transfer):
     parent, child = native_transfer
     with pytest.raises(AssertionError, match="method differs"):
         verification_report.check_native_child(parent, child, child["to_address"], "accept_fee", succeeds=False)
+
+
+def test_strict_report_cannot_erase_value_credited_by_refused_reservations(monkeypatch):
+    import json
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setattr(verification_report, "VERIFICATION", root / "verification/reviewer-v5")
+    original = Path.read_text
+    def altered_balance(path, *args, **kwargs):
+        content = original(path, *args, **kwargs)
+        if path.name == "final-source-balance-probe.json":
+            evidence = json.loads(content)
+            primary = next(row for row in evidence["observations"] if row["registry"] == "primary")
+            primary["native_balance_atto"] = 0
+            return json.dumps(evidence)
+        return content
+    monkeypatch.setattr(Path, "read_text", altered_balance)
+    monkeypatch.setattr(verification_report, "write_json", lambda *args, **kwargs: None)
+    with pytest.raises(AssertionError, match="refused native deposits differ"):
+        verification_report.report()

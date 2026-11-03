@@ -511,6 +511,29 @@ def report(partial=False):
                                "restriction": restricted["hash"], "accepted_children": [receipt["hash"] for receipt in children],
                                "restore": receipts["recovery-restore-" + role]["hash"], "retry": published["hash"],
                                "action": receipts["recovery-action-" + role]["hash"], "production_appeal_proof": False})
+    refused_value_credits = []
+    source_balance_path = VERIFICATION / "final-source-balance-probe.json"
+    if not partial or source_balance_path.exists():
+        source_balance_probe = json.loads(source_balance_path.read_text())
+        observations = {item["registry"]: item for item in source_balance_probe["observations"]}
+        primary = observations["primary"]
+        assert primary["address"] == deployment["contracts"]["rhizome"]["address"]
+        for operation in ("audit-unauthorized-reservation", "audit-unauthorized-reservation-2", "audit-unauthorized-reservation-3"):
+            receipt, payload = receipts[operation], intents[operation]
+            assert not successful(receipt) and receipt.get("triggered_transactions", []) == []
+            assert payload["address"] == primary["address"] and payload["method"] == "reserve_pair" and payload["value"] == 1
+            refused_value_credits.append({"operation": operation, "transaction": receipt["hash"],
+                                          "source": receipt["from_address"], "destination": primary["address"],
+                                          "amount_atto": 1, "assessment_charge": False})
+        assert primary["limits"]["retained_fee_balance_atto"] == primary["native_balance_atto"] == sum(item["amount_atto"] for item in refused_value_credits) == 3, "refused native deposits differ from final source balance"
+        accepted_primary_charges = sum(payload["value"] for operation, payload in intents.items()
+                                       if payload["method"] == "reserve_pair" and payload["address"] == primary["address"]
+                                       and operation in receipts and successful(receipts[operation]))
+        assert primary["limits"]["charged_atto"] == accepted_primary_charges
+        for role, label in (("recovery", "deploy-restriction-source"), ("assisted", "deploy-assisted-refund-rhizome"), ("original", "deploy-refund-rhizome")):
+            observation = observations[role]
+            assert observation["address"] == receipts[label]["to_address"]
+            assert observation["limits"]["retained_fee_balance_atto"] == observation["native_balance_atto"] == 0
     catalog_path = VERIFICATION / "public-evidence.json"
     catalog = json.loads(catalog_path.read_text())["catalog"] if catalog_path.exists() else {}
     tree = ast.parse((ROOT / "contracts" / "rhizome.py").read_text())
@@ -556,7 +579,7 @@ def report(partial=False):
                "finalized_protocol_refusals": protocol_refusals,
                "paid_assessment_reservations": len(reservations), "native_assessment_charges_atto": sum(value["value"] for value in reservations),
                "verified_treasury_payouts": verified_payouts,
-               "verified_hosted_recoveries": recoveries,
+               "verified_hosted_recoveries": recoveries, "refused_reservation_value_credits": refused_value_credits,
                "verified_finality_confirmations": confirmations,
                "model_assessments_with_available_evidence": sum(item["decision"]["available"] for item in assessments),
                "retrieval_only_assessments": sum(not item["decision"]["available"] for item in assessments),

@@ -4,7 +4,7 @@ Rhizome adjudicates whether evidence comes from independent production origins. 
 
 The count says how independently evidence was produced. Applications remain responsible for judging an event, pricing risk or choosing another consequence. The included event resolver requires three origins; the independent insurance gate can require two. Both use authenticated messages emitted only after source transactions finalize.
 
-**Release status:** corrected contracts are deployed and byte-verified on StudioNet in `reviewer-v5`, from committed source `92d39d9`. The full 16-scenario hosted security/recovery qualification is in progress. Historical `treasury-v3` receipts qualify only the earlier source; the corrected release uses fresh addresses and evidence.
+**Release status:** corrected contracts are deployed and byte-verified on StudioNet in `reviewer-v5`, from committed source `92d39d9`. All 16 hosted security/recovery scenarios and the strict artifact report pass; complete source-byte and native-balance reconciliation passed. The final anonymous public replay follows publication. Historical `treasury-v3` receipts qualify only the earlier source; the corrected release uses fresh addresses and evidence.
 
 ## Contract package
 
@@ -44,7 +44,7 @@ If the distribution omits `ensurepip`, create the environment with `python3 -m v
 
 Direct tests use labelled synthetic web/model fault injection and explicit `direct_vm.run_validator()` probes. They verify state, permissions, bounds, validator rejection and all 32,768 binary independence graphs on six sources. They do not replace hosted consensus verification. The [Studio tests](tests/integration/test_studio.py) execute real deployed contracts, real web retrieval and real model/validator consensus using publicly retrievable, explicitly synthetic records signed by separate configured test principals.
 
-The earlier deployment passed **73 direct tests, 15 client/history tests and all 11 hosted scenarios**. The corrected working source passes **122 direct tests and 59 client/history tests**; its complete 16-scenario hosted suite is running against the corrected deployment. The historical strict [receipt report](verification/treasury-v3/verification-summary.json) checks 185 distinct finalized transactions, 24 accepted model assessments, a genuine changing-byte refusal, the complete fifteen-pair matrix and both consumer actions. Final revision/quarantine tests intentionally invalidate earlier positive certificates; their successful historical action receipts remain preserved.
+The earlier deployment passed **73 direct tests, 15 client/history tests and all 11 hosted scenarios**. The corrected working source passes **122 direct tests and 60 client/history tests**; all 16 hosted scenarios passed against the corrected deployment. The corrected strict report validates 403 distinct finalized transactions and 36 accepted assessments. The historical strict [receipt report](verification/treasury-v3/verification-summary.json) checks 185 distinct finalized transactions, 24 accepted model assessments, a genuine changing-byte refusal, the complete fifteen-pair matrix and both consumer actions. Final revision/quarantine tests intentionally invalidate earlier positive certificates; their successful historical action receipts remain preserved.
 
 ## Builder integration
 
