@@ -4,7 +4,7 @@ Rhizome adjudicates whether evidence comes from independent production origins. 
 
 The count says how independently evidence was produced. Applications remain responsible for judging an event, pricing risk or choosing another consequence. The included event resolver requires three origins; the independent insurance gate can require two. Both use authenticated messages emitted only after source transactions finalize.
 
-**Release status:** corrected contracts are deployed and byte-verified on StudioNet in `reviewer-v5`, from committed source `92d39d9`. All 16 hosted security/recovery scenarios and the strict artifact report pass; complete source-byte and native-balance reconciliation passed. The final anonymous public replay follows publication. Historical `treasury-v3` receipts qualify only the earlier source; the corrected release uses fresh addresses and evidence.
+**Release status:** corrected contracts are deployed and byte-verified on StudioNet in `reviewer-v5`, from committed source `92d39d9`. All 16 hosted security/recovery scenarios and the strict artifact report pass; complete source-byte and native-balance reconciliation passed. A fresh anonymous checkout passes strict public replay without credentials or the private journal. Historical `treasury-v3` receipts qualify only the earlier source; the corrected release uses fresh addresses and evidence.
 
 ## Contract package
 
