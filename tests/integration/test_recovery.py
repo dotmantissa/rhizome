@@ -1,8 +1,10 @@
-"""Real hosted refund and nonfinal/final storage recovery qualification.
+"""Real hosted assisted returns and finality-confirmed metadata recovery.
 
 The restriction fixture extends the complete production Rhizome source with an
 owner-controlled reversible restriction and accepted probes. All evidence,
-semantic evaluation, consumer bytes and storage snapshots execute on Studio.
+semantic evaluation, consumer bytes and authenticated finality metadata execute
+on Studio. The embedded historical probe comment uses snapshot terminology
+for that metadata; it does not establish synchronous LATEST_FINAL reads.
 This controlled restoration is not a claim of a successful production appeal.
 """
 import base64
@@ -70,16 +72,17 @@ def test_12_failed_fee_refunds_forward_once_to_fixed_treasury(live):
     failed = one_child(studio, reserved, "refund-assisted-fee-failure", expected_error=True)
     studio.drain(failed, "refund-assisted-fee-failure")
     # Studio credits failed receivers but does not schedule the SDK refund.
-    # The controlled receiver explicitly returns the actual failed fee value.
+    # The controlled receiver returns actual native value. The pinned runner
+    # rejects explicit __handler dispatch; Studio nevertheless credits its value.
     returned = studio.submit("refund-assisted-return-initial", treasury, "return_failed_fee", ["initial-fee-return", source])
-    studio.drain(returned, "refund-assisted-return-initial")
+    returned_child = rejected_handler_return(studio, returned, "refund-assisted-return-initial")
     before = refund_checkpoint(studio, "initial-return", source)
     assert before["retained_fee_balance_atto"] == before["charged_atto"] == 1
     retry = studio.submit("refund-assisted-retry-refused", source, "retry_treasury_transfer", ["refused-retry", 1])
     retry_failed = one_child(studio, retry, "refund-assisted-retry-fee-failure", expected_error=True)
     studio.drain(retry_failed, "refund-assisted-retry-fee-failure")
     returned_retry = studio.submit("refund-assisted-return-retry", treasury, "return_failed_fee", ["retry-fee-return", source])
-    studio.drain(returned_retry, "refund-assisted-return-retry")
+    returned_retry_child = rejected_handler_return(studio, returned_retry, "refund-assisted-return-retry")
     assert refund_checkpoint(studio, "retry-return", source)["retained_fee_balance_atto"] == 1
     studio.submit("refund-assisted-enable-treasury", treasury, "enable")
     recovered = studio.submit("refund-assisted-retry-success", source, "retry_treasury_transfer", ["successful-retry", 1])
@@ -90,12 +93,24 @@ def test_12_failed_fee_refunds_forward_once_to_fixed_treasury(live):
     assert studio.read(source, "get_limits")["retained_fee_balance_atto"] == 0
     assert studio.read(source, "get_pair", [request, "delta", "epsilon"])["attempts"] == 1
     write_json(VERIFICATION / "refund-recovery.json", {
-        "classification": "REAL HOSTED FAILED TRANSFERS AND RECEIVER-ASSISTED RETURNS THROUGH SDK HANDLER; NOT AUTOMATIC PROTOCOL REFUNDS",
+        "classification": "REAL HOSTED RECEIVER-ASSISTED NATIVE VALUE CREDIT DESPITE REJECTED HANDLER DISPATCH; FORWARDING/REPLAY, NOT AUTOMATIC PROTOCOL REFUND OR SUCCESSFUL SDK HANDLER PROOF",
         "source": source, "production_source_sha256": hashlib.sha256((ROOT / "contracts/rhizome.py").read_bytes()).hexdigest(),
         "treasury": treasury, "initial_failure": failed["hash"], "retry_failure": retry_failed["hash"],
         "receiver_assisted_returns": [returned["hash"], returned_retry["hash"]],
+        "rejected_handler_children": [returned_child["hash"], returned_retry_child["hash"]],
+        "sdk_handler_success_proof": False, "automatic_protocol_refund_proof": False,
         "recovery": recovered["hash"], "replay": replay["hash"], "retained_balance_atto": 0,
     })
+
+
+def rejected_handler_return(studio, parent, label):
+    """Verify the actual pinned-runtime refusal; native credits are checked separately."""
+    child = one_child(studio, parent, label + "-child-0", expected_error=True)
+    leaders = child["consensus_data"]["leader_receipt"]
+    leader = next(item for item in leaders if item.get("mode", "leader") == "leader")
+    assert "calls to methods that start with __ is forbidden" in leader["genvm_result"]["stderr"]
+    assert child.get("triggered_transactions", []) == []
+    return child
 
 
 def refund_checkpoint(studio, phase, source):
@@ -205,7 +220,7 @@ def test_13_tentative_restriction_preserves_permission_and_delivery_retries(reco
     result = studio.submit("recovery-action-" + role, consumer, "apply_action", ["tentative-recovery", "recovery-action-" + role], role=role)
     assert finalized_result(result)["action"] == action
     write_json(VERIFICATION / ("tentative-recovery-" + role + ".json"), {
-        "classification": "REAL HOSTED SNAPSHOT DIVERGENCE AND CONTROLLED RESTORATION; NOT PRODUCTION APPEAL PROOF",
+        "classification": "REAL HOSTED LATEST RESTRICTIONS VERSUS AUTHENTICATED FINALITY-CONFIRMED METADATA; CONTROLLED RESTORATION, NOT PRODUCTION APPEAL PROOF",
         "source": source, "consumer": consumer, "restriction": restricted["hash"],
         "accepted_probe_children": [receipt["hash"] for receipt in children], "deferred": deferred,
         "refresh": refreshed, "action": result["hash"],

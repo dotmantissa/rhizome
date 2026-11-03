@@ -150,7 +150,8 @@ def report(partial=False):
                          "audit-invalid-consumer-policy", "audit-invalid-consumer-binding",
                          "audit-invalid-resolver-policy", "audit-invalid-resolver-binding",
                          "audit-forged-finality-confirmation",
-                         "refund-fee-failure", "refund-assisted-fee-failure", "refund-assisted-retry-fee-failure"}
+                         "refund-fee-failure", "refund-assisted-fee-failure", "refund-assisted-retry-fee-failure",
+                         "refund-assisted-return-initial-child-0", "refund-assisted-return-retry-child-0"}
     for name, contract in deployment["contracts"].items():
         receipt = receipts["deploy-" + name]
         assert receipt["hash"] == contract["deployment_tx"] and successful(receipt), name
@@ -396,7 +397,13 @@ def report(partial=False):
     reservations = [payload for operation, payload in intents.items()
                     if payload["method"] == "reserve_pair" and operation in receipts and successful(receipts[operation])]
     recoveries = []
-    if not partial:
+    refund_operations = {"deploy-refund-rhizome", "deploy-rejecting-treasury", "refund-reservation", "refund-fee-failure",
+                         "deploy-assisted-refund-rhizome", "deploy-assisted-refund-treasury", "refund-assisted-reservation",
+                         "refund-assisted-fee-failure", "refund-assisted-retry-refused", "refund-assisted-retry-fee-failure",
+                         "refund-assisted-return-initial", "refund-assisted-return-initial-child-0",
+                         "refund-assisted-return-retry", "refund-assisted-return-retry-child-0",
+                         "refund-assisted-retry-success", "refund-assisted-retry-success-child-0", "refund-assisted-retry-replay"}
+    if not partial or refund_operations <= set(receipts):
         # Preserve the original failed probe: its receiver retained one atto,
         # and Studio emitted no automatic refund. It cannot qualify recovery.
         original_source = receipts["deploy-refund-rhizome"]["to_address"]
@@ -443,11 +450,20 @@ def report(partial=False):
                               "status": "EMITTED_ON_FINALIZED", "kind": "CONTROLLED_RECEIVER_RETURN"}
             assert len(parent["triggered_transactions"]) == 1
             child_hash = transaction_hash(parent["triggered_transactions"][0])
-            check_native_child(parent, by_hash[child_hash], refund_source, "__on_errored_message__")
+            check_native_child(parent, by_hash[child_hash], refund_source, "__on_errored_message__", succeeds=False)
+            assert "calls to methods that start with __ is forbidden" in leader(by_hash[child_hash])["genvm_result"]["stderr"]
+            assert by_hash[child_hash].get("triggered_transactions", []) == []
             checkpoint = json.loads((VERIFICATION / ("refund-assisted-checkpoint-" + phase + ".json")).read_text())
             assert checkpoint["source"] == refund_source and checkpoint["phase"] == phase
             assert checkpoint["original_live_limits"]["retained_fee_balance_atto"] == checkpoint["original_live_limits"]["charged_atto"] == 1
-            returned.append({"parent": parent["hash"], "sdk_handler_child": child_hash})
+            returned.append({"parent": parent["hash"], "rejected_handler_child": child_hash, "retained_value_credit_atto": 1})
+        handler_probe = json.loads((VERIFICATION / "assisted-handler-runtime-probe.json").read_text())
+        assert handler_probe["failed_handler_child"] == returned[0]["rejected_handler_child"]
+        handler_observations = {(item["address"], item["method"]): item["result"] for item in handler_probe["observations"]}
+        assert handler_observations[refund_source, "get_limits"]["retained_fee_balance_atto"] == 1
+        assert int(handler_observations[refund_source, "eth_getBalance"], 16) == 1
+        assert handler_observations[refund_treasury, "get_totals"] == {"received_atto": 0, "balance_atto": 0}
+        assert int(handler_observations[refund_treasury, "eth_getBalance"], 16) == 0
         recovered = receipts["refund-assisted-retry-success"]
         replay = receipts["refund-assisted-retry-replay"]
         record = json.loads(leader(recovered)["result"]["payload"]["readable"])
@@ -461,10 +477,14 @@ def report(partial=False):
         assert len(recovered["triggered_transactions"]) == 1
         child_hash = transaction_hash(recovered["triggered_transactions"][0])
         check_native_child(recovered, by_hash[child_hash], refund_treasury, "accept_fee")
-        recoveries.append({"kind": "receiver_assisted_fee_return_and_retry", "source": refund_source, "treasury": refund_treasury,
+        recoveries.append({"kind": "receiver_assisted_native_value_credit_and_retry", "source": refund_source, "treasury": refund_treasury,
                            "failure": receipts["refund-assisted-fee-failure"]["hash"], "retry_failure": receipts["refund-assisted-retry-fee-failure"]["hash"],
-                           "receiver_assisted_returns": returned, "automatic_protocol_refund_proof": False,
+                           "receiver_assisted_returns": returned, "automatic_protocol_refund_proof": False, "sdk_handler_success_proof": False,
                            "recovery": recovered["hash"], "payment_child": child_hash, "replay": replay["hash"]})
+    probe_operations = {"deploy-restriction-source", "deploy-recovery-resolver", "deploy-recovery-insurance"} | {
+        operation + role for role in ("resolver", "insurance") for operation in (
+            "recovery-restrict-", "recovery-restore-", "publish-recovery-deferred-", "recovery-action-")}
+    if not partial or probe_operations <= set(receipts):
         probe_source = receipts["deploy-restriction-source"]["to_address"]
         assert intents["deploy-restriction-source"]["code_sha256"] == hashlib.sha256((VERIFICATION / "recovery-probe-source.py").read_bytes()).hexdigest()
         for role, contract_name in (("resolver", "event_resolver"), ("insurance", "insurance_gate")):
