@@ -16,6 +16,7 @@ import time
 import requests
 from eth_account import Account
 from eth_utils import keccak
+from urllib3.exceptions import MaxRetryError, NameResolutionError
 from genlayer_py.client import GenLayerClient
 from genlayer_py.chains import studionet
 
@@ -78,6 +79,13 @@ def retry_delay(response):
         except (ValueError, TypeError, OverflowError):
             return 60
     return max(1, seconds) + 1
+
+
+def dns_failed_before_transmission(error):
+    """Recognize the transport's typed DNS failure before a connection exists."""
+    return (isinstance(error, requests.ConnectionError) and len(error.args) == 1
+            and isinstance(error.args[0], MaxRetryError)
+            and isinstance(error.args[0].reason, NameResolutionError))
 
 
 def sanitize(value):
@@ -150,7 +158,7 @@ class Studio:
                         time.sleep(gap)
                     self.last_rpc = time.monotonic()
                     try:
-                        if method == "eth_sendRawTransaction" and attempt == 0:
+                        if method == "eth_sendRawTransaction":
                             # Persist the public transaction ID before an ambiguous
                             # timeout/502 can hide a successful broadcast. Never
                             # journal the signed bytes or silently replace a write.
@@ -169,7 +177,16 @@ class Studio:
                             continue
                         c.provider._raise_on_error(result, method)
                         break
-                    except (requests.RequestException, ValueError):
+                    except (requests.RequestException, ValueError) as error:
+                        if method == "eth_sendRawTransaction" and dns_failed_before_transmission(error):
+                            self.log({"event": "SEND_NOT_TRANSMITTED", "operation": self.current_operation,
+                                      "ethereum_hash": "0x" + keccak(hexstr=params[0]).hex(),
+                                      "reason": "DNS_FAILURE_BEFORE_CONNECTION", "attempt": attempt + 1})
+                            if attempt == 3:
+                                raise
+                            print("RPC DNS lookup failed before transmission; retrying identical signed request", flush=True)
+                            time.sleep(5)
+                            continue
                         if method == "eth_sendRawTransaction" or attempt == 3:
                             raise
                         time.sleep(5)
@@ -236,7 +253,13 @@ class Studio:
         submitted = [r for r in old if r["event"] == "SUBMITTED"]
         if submitted:
             return self.wait(submitted[-1]["tx"], label, expected_error) if wait_for_finality else submitted[-1]["tx"]
-        broadcasts = [r for r in old if r["event"] in ("BROADCAST", "SEND_ATTEMPT")]
+        sends = [r for r in old if r["event"] in ("BROADCAST", "SEND_ATTEMPT", "SEND_NOT_TRANSMITTED")]
+        attempts = [r for r in sends if r["event"] == "SEND_ATTEMPT"]
+        not_transmitted = (bool(sends) and sends[-1]["event"] == "SEND_NOT_TRANSMITTED"
+                           and sends[-1].get("reason") == "DNS_FAILURE_BEFORE_CONNECTION"
+                           and bool(attempts) and sends[-1].get("ethereum_hash") == attempts[-1]["ethereum_hash"]
+                           and not any(r["event"] == "BROADCAST" for r in sends))
+        broadcasts = [] if not_transmitted else [r for r in sends if r["event"] in ("BROADCAST", "SEND_ATTEMPT")]
         if broadcasts:
             # A saved attempt may have reached the server despite a lost response.
             # If its receipt is absent, propagate the lookup error for reconciliation

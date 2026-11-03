@@ -67,7 +67,8 @@ def test_explicit_rate_refusal_retries_identical_signed_request(transport, refus
     assert run([refusal, response()])["result"] == "synthetic-transaction-hash"
     assert len(calls) == 2 and calls[0] == calls[1]
     assert sleeps == [60]
-    assert [row["event"] for row in instance.records] == ["SEND_ATTEMPT", "RATE_LIMITED", "BROADCAST"]
+    assert [row["event"] for row in instance.records] == [
+        "SEND_ATTEMPT", "RATE_LIMITED", "SEND_ATTEMPT", "BROADCAST"]
 
 
 def test_ambiguous_write_timeout_never_rebroadcasts(transport):
@@ -78,6 +79,67 @@ def test_ambiguous_write_timeout_never_rebroadcasts(transport):
     assert instance.records == [{"event": "SEND_ATTEMPT", "operation": "synthetic-write",
                                  "ethereum_hash": "0x" + module.keccak(hexstr="0x010203").hex(),
                                  "recorded_at": instance.records[0]["recorded_at"]}]
+
+
+def dns_failure():
+    import socket
+    from urllib3.connection import HTTPSConnection
+    error = module.NameResolutionError("rpc.invalid", HTTPSConnection("rpc.invalid"),
+                                       socket.gaierror(-3, "synthetic DNS failure"))
+    return requests.ConnectionError(module.MaxRetryError(None, "/", error))
+
+
+def test_dns_failure_retries_the_identical_signed_request(transport):
+    instance, run, calls, sleeps = transport
+    assert run([dns_failure(), response()])["result"] == "synthetic-transaction-hash"
+    assert calls[0] == calls[1] and sleeps == [5]
+    assert [row["event"] for row in instance.records] == [
+        "SEND_ATTEMPT", "SEND_NOT_TRANSMITTED", "SEND_ATTEMPT", "BROADCAST"]
+    assert instance.records[0]["ethereum_hash"] == instance.records[1]["ethereum_hash"]
+    assert "0x010203" not in instance.journal.read_text()
+
+
+def test_dns_retry_followed_by_an_ambiguous_failure_keeps_exact_hash_recovery(transport):
+    instance, run, calls, _ = transport
+    with pytest.raises(requests.Timeout):
+        run([dns_failure(), requests.Timeout("response lost after transmission")])
+    assert len(calls) == 2 and calls[0] == calls[1]
+    assert [row["event"] for row in instance.records] == [
+        "SEND_ATTEMPT", "SEND_NOT_TRANSMITTED", "SEND_ATTEMPT"]
+
+
+@pytest.mark.parametrize("error", [requests.ConnectionError("connection reset after transmission"),
+                                   requests.ConnectionError("NameResolutionError text alone is not proof")])
+def test_ambiguous_connection_failure_never_retries_a_write(transport, error):
+    instance, run, calls, _ = transport
+    with pytest.raises(requests.ConnectionError):
+        run([error, response()])
+    assert len(calls) == 1
+    assert [row["event"] for row in instance.records] == ["SEND_ATTEMPT"]
+
+
+def test_exhausted_dns_retries_allow_recovery_only_with_the_saved_nonce(transport):
+    instance, run, calls, sleeps = transport
+    with pytest.raises(requests.ConnectionError):
+        run([dns_failure() for _ in range(4)])
+    assert len(calls) == 4 and sleeps == [5, 5, 5]
+    assert instance.records[-1]["event"] == "SEND_NOT_TRANSMITTED"
+    instance.accounts["deployer"] = SimpleNamespace(address="synthetic-sender")
+    payload = {"address": "synthetic-contract", "method": "reserve_pair", "args": ["request"],
+               "sender": "synthetic-sender", "value": 1, "code_sha256": None}
+    instance.records.insert(0, {"event": "INTENT", "operation": "synthetic-write",
+                                "payload_digest": module.digest(payload), "nonce": 7})
+    writes = []
+    instance.client = lambda role="deployer": SimpleNamespace(
+        get_current_nonce=lambda **kwargs: 9, write_contract=lambda **kwargs: writes.append(kwargs) or "tx")
+    with pytest.raises(AssertionError, match="unreconciled nonce"):
+        instance.submit("synthetic-write", "synthetic-contract", "reserve_pair", ["request"], value=1)
+    assert not writes
+    instance.client = lambda role="deployer": SimpleNamespace(
+        get_current_nonce=lambda **kwargs: 7, write_contract=lambda **kwargs: writes.append(kwargs) or "tx")
+    assert instance.submit("synthetic-write", "synthetic-contract", "reserve_pair", ["request"],
+                           value=1, wait_for_finality=False) == "tx"
+    assert len(writes) == 1
 
 
 def test_read_timeout_can_retry(transport):
@@ -184,7 +246,7 @@ def test_rate_limit_retries_are_bounded(transport):
     with pytest.raises(requests.HTTPError):
         run([response(429) for _ in range(4)])
     assert len(calls) == 4 and sleeps == [60, 60, 60]
-    assert [row["event"] for row in instance.records] == ["SEND_ATTEMPT"] + ["RATE_LIMITED"] * 3
+    assert [row["event"] for row in instance.records] == ["SEND_ATTEMPT", "RATE_LIMITED"] * 3 + ["SEND_ATTEMPT"]
 
 
 def test_finalized_receipt_recovery_needs_no_rpc_and_checks_execution(transport, monkeypatch, tmp_path):
