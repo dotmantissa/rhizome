@@ -276,3 +276,825 @@ scripts/studio.py:256: AssertionError
 FAILED tests/integration/test_studio.py::test_01_three_independent_measurements_and_shared_infrastructure
 !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
 ======================== 1 failed in 100.43s (0:01:40) =========================
+RECOVERY immediate reservation after empty-pair recheck; nonce 3271
+RPC rate limited; retrying the same request after 3 seconds
+Traceback (most recent call last):
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/urllib3/connection.py", line 239, in _new_conn
+    sock = connection.create_connection(
+        (self._dns_host, self.port),
+    ...<2 lines>...
+        socket_options=self.socket_options,
+    )
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/urllib3/util/connection.py", line 60, in create_connection
+    for res in socket.getaddrinfo(host, port, family, socket.SOCK_STREAM):
+               ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/socket.py", line 983, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno -3] Temporary failure in name resolution
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/urllib3/connectionpool.py", line 793, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/urllib3/connectionpool.py", line 494, in _make_request
+    raise new_e
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/urllib3/connectionpool.py", line 470, in _make_request
+    self._validate_conn(conn)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/urllib3/connectionpool.py", line 1125, in _validate_conn
+    conn.connect()
+    ~~~~~~~~~~~~^^
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/urllib3/connection.py", line 827, in connect
+    self.sock = sock = self._new_conn()
+                       ~~~~~~~~~~~~~~^^
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/urllib3/connection.py", line 246, in _new_conn
+    raise NameResolutionError(self.host, self, e) from e
+urllib3.exceptions.NameResolutionError: HTTPSConnection(host='studio.genlayer.com', port=443): Failed to resolve 'studio.genlayer.com' ([Errno -3] Temporary failure in name resolution)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/requests/adapters.py", line 644, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/urllib3/connectionpool.py", line 847, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/urllib3/util/retry.py", line 555, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='studio.genlayer.com', port=443): Max retries exceeded with url: /api (Caused by NameResolutionError("HTTPSConnection(host='studio.genlayer.com', port=443): Failed to resolve 'studio.genlayer.com' ([Errno -3] Temporary failure in name resolution)"))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<stdin>", line 15, in <module>
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/scripts/studio.py", line 264, in submit
+    tx = c.write_contract(address=address, function_name=method, args=args or [], value=value, leader_only=False)
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/genlayer_py/client/genlayer_client.py", line 118, in write_contract
+    return write_contract(
+        self=self,
+    ...<8 lines>...
+        sim_config=sim_config,
+    )
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/genlayer_py/contracts/actions.py", line 123, in write_contract
+    return _send_transaction(
+        self=self,
+    ...<3 lines>...
+        sim_config=sim_config,
+    )
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/genlayer_py/contracts/actions.py", line 347, in _send_transaction
+    tx_receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/web3/eth/eth.py", line 489, in wait_for_transaction_receipt
+    tx_receipt = self._transaction_receipt(transaction_hash)
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/web3/module.py", line 106, in caller
+    result = w3.manager.request_blocking(
+        method_str, params, error_formatters, null_result_formatters
+    )
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/web3/manager.py", line 225, in request_blocking
+    response = self._make_request(method, params)
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/web3/manager.py", line 156, in _make_request
+    return request_func(method, params)
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/web3/middleware/base.py", line 53, in middleware
+    return self.response_processor(method, make_request(method, params))
+                                           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/web3/middleware/base.py", line 53, in middleware
+    return self.response_processor(method, make_request(method, params))
+                                           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/web3/middleware/base.py", line 53, in middleware
+    return self.response_processor(method, make_request(method, params))
+                                           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  [Previous line repeated 2 more times]
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/scripts/studio.py", line 159, in paced
+    response = requests.post(c.provider.url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=(10, 45))
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/lib/python3.14/site-packages/requests/adapters.py", line 677, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPSConnectionPool(host='studio.genlayer.com', port=443): Max retries exceeded with url: /api (Caused by NameResolutionError("HTTPSConnection(host='studio.genlayer.com', port=443): Failed to resolve 'studio.genlayer.com' ([Errno -3] Temporary failure in name resolution)"))
+2026-11-03: recovering acknowledged reservation using exact saved transaction hash
+reserve-event-permitted-alpha-beta-1 FINALIZED success 0x1335e334e94a24326536a1bbbb6e2f6efb75ea81a9a0cf1faa669c4ab3ac26e9
+reserve-event-permitted-alpha-beta-1-child-0 FINALIZED success 0x72d40e5e14db5bca14505efa091cc207dffc1a9999d53effdc2afe26c8d03e99
+Reservation recovered; resuming identical ordered sixteen hosted scenarios
+INFO: File `gltest.config.yaml` found in the current directory, using it
+INFO: Clearing artifacts directory: artifacts
+INFO: Using the following configuration:
+INFO:   RPC URL: http://127.0.0.1:4000/api
+INFO:   Selected Network: localnet
+INFO:   Available networks: ['studionet', 'localnet']
+INFO:   Selected chain type: localnet
+INFO:   Available chains: localnet, studionet, testnet_asimov, testnet_bradbury
+INFO:   Contracts directory: contracts
+INFO:   Artifacts directory: artifacts
+INFO:   Environment: .env
+INFO:   Default wait interval: 3000 ms
+INFO:   Default wait retries: 50
+INFO:   Leader only mode: False
+============================= test session starts ==============================
+platform linux -- Python 3.14.4, pytest-9.1.1, pluggy-1.7.0 -- /home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/dotmantissa/GenLayer_dApps/primitives/rhizome
+configfile: pytest.ini
+plugins: genlayer-test-0.29.2
+collecting ... collected 16 items
+
+tests/integration/test_studio.py::test_01_three_independent_measurements_and_shared_infrastructure reserve-event-permitted-alpha-gamma-1 SUBMITTED 0x2c3041cc605c6d9d9ddaf4ee4f9e42b98492ffb877eb27f2832c5d162e19ce1d
+reserve-event-permitted-beta-gamma-1 SUBMITTED 0x681ff36839410ae3683f8f42994398c2baf3f8e2dfbcfe07396faf862a372902
+reserve-event-permitted-alpha-gamma-1 FINALIZED success 0x2c3041cc605c6d9d9ddaf4ee4f9e42b98492ffb877eb27f2832c5d162e19ce1d
+reserve-event-permitted-alpha-gamma-1-child-0 FINALIZED success 0x76d1964c93ee24ef889de6fa260604f07941b6d68fc7afb14aabb83b4cab37b0
+reserve-event-permitted-beta-gamma-1 FINALIZED success 0x681ff36839410ae3683f8f42994398c2baf3f8e2dfbcfe07396faf862a372902
+reserve-event-permitted-beta-gamma-1-child-0 FINALIZED success 0x0f319fe140caf2712f2780c3ff2406d730abf00817a372c0d4301655099d5816
+assess-event-permitted-alpha-beta-1 SUBMITTED 0x84c035add3da7b1053e46dc6d8fa3b6856d7c489c8e07aaf9151f2871a1a1196
+assess-event-permitted-alpha-gamma-1 SUBMITTED 0x10eb3d61a26cf2977eab89c9f2dbeb5bc37d5d04824893025df34afac5a4c8b8
+FAILED
+
+=================================== FAILURES ===================================
+_______ test_01_three_independent_measurements_and_shared_infrastructure _______
+
+self = <HTTPSConnection(host='studio.genlayer.com', port=443) at 0x7237642c5f90>
+
+    def _new_conn(self) -> socket.socket:
+        """Establish a socket connection and set nodelay settings on it.
+    
+        :return: New socket connection.
+        """
+        try:
+>           sock = connection.create_connection(
+                (self._dns_host, self.port),
+                self.timeout,
+                source_address=self.source_address,
+                socket_options=self.socket_options,
+            )
+
+.venv/lib/python3.14/site-packages/urllib3/connection.py:239: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.14/site-packages/urllib3/util/connection.py:60: in create_connection
+    for res in socket.getaddrinfo(host, port, family, socket.SOCK_STREAM):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+host = 'studio.genlayer.com', port = 443, family = <AddressFamily.AF_UNSPEC: 0>
+type = <SocketKind.SOCK_STREAM: 1>, proto = 0, flags = 0
+
+    def getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        """Resolve host and port into list of address info entries.
+    
+        Translate the host/port argument into a sequence of 5-tuples that contain
+        all the necessary arguments for creating a socket connected to that service.
+        host is a domain name, a string representation of an IPv4/v6 address or
+        None. port is a string service name such as 'http', a numeric port number or
+        None. By passing None as the value of host and port, you can pass NULL to
+        the underlying C API.
+    
+        The family, type and proto arguments can be optionally specified in order to
+        narrow the list of addresses returned. Passing zero as a value for each of
+        these arguments selects the full range of results.
+        """
+        # We override this function since we want to translate the numeric family
+        # and socket type values to enum constants.
+        addrlist = []
+>       for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       socket.gaierror: [Errno -3] Temporary failure in name resolution
+
+/usr/lib/python3.14/socket.py:983: gaierror
+
+The above exception was the direct cause of the following exception:
+
+self = <urllib3.connectionpool.HTTPSConnectionPool object at 0x723764450510>
+method = 'POST', url = '/api'
+body = b'{"jsonrpc": "2.0", "id": 1, "method": "eth_sendRawTransaction", "params": ["0xf9016b820cd4808307a1209400000000000000...756117d62b91856e45c9a7528d4f10833e250eab4039d815ba04483bb674457c06dc1aaa1b81614409be207bd15304915b488b0b2f22ff71544"]}'
+headers = {'User-Agent': 'python-requests/2.32.5', 'Accept-Encoding': 'gzip, deflate, zstd', 'Accept': '*/*', 'Connection': 'keep-alive', 'Content-Length': '813', 'Content-Type': 'application/json'}
+retries = Retry(total=0, connect=None, read=False, redirect=None, status=None)
+redirect = False, assert_same_host = False
+timeout = Timeout(connect=10, read=45, total=None), pool_timeout = None
+release_conn = False, chunked = False, body_pos = None, preload_content = False
+decode_content = False, response_kw = {}
+
+    def urlopen(  # type: ignore[override]
+        self,
+        method: str,
+        url: str,
+        body: _TYPE_BODY | None = None,
+        headers: typing.Mapping[str, str] | None = None,
+        retries: Retry | bool | int | None = None,
+        redirect: bool = True,
+        assert_same_host: bool = True,
+        timeout: _TYPE_TIMEOUT = _DEFAULT_TIMEOUT,
+        pool_timeout: int | None = None,
+        release_conn: bool | None = None,
+        chunked: bool = False,
+        body_pos: _TYPE_BODY_POSITION | None = None,
+        preload_content: bool = True,
+        decode_content: bool = True,
+        **response_kw: typing.Any,
+    ) -> BaseHTTPResponse:
+        """
+        Get a connection from the pool and perform an HTTP request. This is the
+        lowest level call for making a request, so you'll need to specify all
+        the raw details.
+    
+        .. note::
+    
+           More commonly, it's appropriate to use a convenience method
+           such as :meth:`request`.
+    
+        .. note::
+    
+           `release_conn` will only behave as expected if
+           `preload_content=False` because we want to make
+           `preload_content=False` the default behaviour someday soon without
+           breaking backwards compatibility.
+    
+        :param method:
+            HTTP request method (such as GET, POST, PUT, etc.)
+    
+        :param url:
+            The URL to perform the request on.
+    
+        :param body:
+            Data to send in the request body, either :class:`str`, :class:`bytes`,
+            an iterable of :class:`str`/:class:`bytes`, or a file-like object.
+    
+        :param headers:
+            Dictionary of custom headers to send, such as User-Agent,
+            If-None-Match, etc. If None, pool headers are used. If provided,
+            these headers completely replace any pool-specific headers.
+    
+        :param retries:
+            Configure the number of retries to allow before raising a
+            :class:`~urllib3.exceptions.MaxRetryError` exception.
+    
+            If ``None`` (default) will retry 3 times, see ``Retry.DEFAULT``. Pass a
+            :class:`~urllib3.util.retry.Retry` object for fine-grained control
+            over different types of retries.
+            Pass an integer number to retry connection errors that many times,
+            but no other types of errors. Pass zero to never retry.
+    
+            If ``False``, then retries are disabled and any exception is raised
+            immediately. Also, instead of raising a MaxRetryError on redirects,
+            the redirect response will be returned.
+    
+        :type retries: :class:`~urllib3.util.retry.Retry`, False, or an int.
+    
+        :param redirect:
+            If True, automatically handle redirects (status codes 301, 302,
+            303, 307, 308). Each redirect counts as a retry. Disabling retries
+            will disable redirect, too.
+    
+        :param assert_same_host:
+            If ``True``, will make sure that the host of the pool requests is
+            consistent else will raise HostChangedError. When ``False``, you can
+            use the pool on an HTTP proxy and request foreign hosts.
+    
+        :param timeout:
+            If specified, overrides the default timeout for this one
+            request. It may be a float (in seconds) or an instance of
+            :class:`urllib3.util.Timeout`.
+    
+        :param pool_timeout:
+            If set and the pool is set to block=True, then this method will
+            block for ``pool_timeout`` seconds and raise EmptyPoolError if no
+            connection is available within the time period.
+    
+        :param bool preload_content:
+            If True, the response's body will be preloaded into memory.
+    
+        :param bool decode_content:
+            If True, will attempt to decode the body based on the
+            'content-encoding' header.
+    
+        :param release_conn:
+            If False, then the urlopen call will not release the connection
+            back into the pool once a response is received (but will release if
+            you read the entire contents of the response such as when
+            `preload_content=True`). This is useful if you're not preloading
+            the response's content immediately. You will need to call
+            ``r.release_conn()`` on the response ``r`` to return the connection
+            back into the pool. If None, it takes the value of ``preload_content``
+            which defaults to ``True``.
+    
+        :param bool chunked:
+            If True, urllib3 will send the body using chunked transfer
+            encoding. Otherwise, urllib3 will send the body using the standard
+            content-length form. Defaults to False.
+    
+        :param int body_pos:
+            Position to seek to in file-like body in the event of a retry or
+            redirect. Typically this won't need to be set because urllib3 will
+            auto-populate the value when needed.
+        """
+        # Ensure that the URL we're connecting to is properly encoded
+        if url.startswith("/"):
+            # URLs starting with / are inherently schemeless.
+            url = to_str(_encode_target(url))
+            destination_scheme = None
+        else:
+            parsed_url = parse_url(url)
+            destination_scheme = parsed_url.scheme
+            url = to_str(parsed_url._replace(fragment=None).url)
+    
+        if headers is None:
+            headers = self.headers
+    
+        if not isinstance(retries, Retry):
+            retries = Retry.from_int(retries, redirect=redirect, default=self.retries)
+    
+        if release_conn is None:
+            release_conn = preload_content
+    
+        # Check host
+        if assert_same_host and not self.is_same_host(url):
+            raise HostChangedError(self, url, retries)
+    
+        conn = None
+    
+        # Track whether `conn` needs to be released before
+        # returning/raising/recursing. Update this variable if necessary, and
+        # leave `release_conn` constant throughout the function. That way, if
+        # the function recurses, the original value of `release_conn` will be
+        # passed down into the recursive call, and its value will be respected.
+        #
+        # See issue #651 [1] for details.
+        #
+        # [1] <https://github.com/urllib3/urllib3/issues/651>
+        release_this_conn = release_conn
+    
+        http_tunnel_required = connection_requires_http_tunnel(
+            self.proxy, self.proxy_config, destination_scheme
+        )
+    
+        # Merge the proxy headers. Only done when not using HTTP CONNECT. We
+        # have to copy the headers dict so we can safely change it without those
+        # changes being reflected in anyone else's copy.
+        if not http_tunnel_required:
+            headers = headers.copy()  # type: ignore[attr-defined]
+            headers.update(self.proxy_headers)  # type: ignore[union-attr]
+    
+        # Must keep the exception bound to a separate variable or else Python 3
+        # complains about UnboundLocalError.
+        err = None
+    
+        # Keep track of whether we cleanly exited the except block. This
+        # ensures we do proper cleanup in finally.
+        clean_exit = False
+    
+        # Rewind body position, if needed. Record current position
+        # for future rewinds in the event of a redirect/retry.
+        body_pos = set_file_position(body, body_pos)
+    
+        timeout_obj = self._get_timeout(timeout)
+        try:
+            # Request a connection from the queue.
+            conn = self._get_conn(timeout=pool_timeout)
+            conn.timeout = timeout_obj.connect_timeout  # type: ignore[assignment]
+    
+            # Is this a closed/new connection that requires CONNECT tunnelling?
+            if self.proxy is not None and http_tunnel_required and conn.is_closed:
+                try:
+                    self._prepare_proxy(conn)
+                except (BaseSSLError, OSError, SocketTimeout) as e:
+                    self._raise_timeout(
+                        err=e, url=self.proxy.url, timeout_value=conn.timeout
+                    )
+                    raise
+    
+            # If we're going to release the connection in ``finally:``, then
+            # the response doesn't need to know about the connection. Otherwise
+            # it will also try to release it and we'll have a double-release
+            # mess.
+            response_conn = conn if not release_conn else None
+    
+            # Make the request on the HTTPConnection object
+>           response = self._make_request(
+                conn,
+                method,
+                url,
+                timeout=timeout_obj,
+                body=body,
+                headers=headers,
+                chunked=chunked,
+                retries=retries,
+                response_conn=response_conn,
+                preload_content=preload_content,
+                decode_content=decode_content,
+                **response_kw,
+            )
+
+.venv/lib/python3.14/site-packages/urllib3/connectionpool.py:793: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.14/site-packages/urllib3/connectionpool.py:494: in _make_request
+    raise new_e
+.venv/lib/python3.14/site-packages/urllib3/connectionpool.py:470: in _make_request
+    self._validate_conn(conn)
+.venv/lib/python3.14/site-packages/urllib3/connectionpool.py:1125: in _validate_conn
+    conn.connect()
+.venv/lib/python3.14/site-packages/urllib3/connection.py:827: in connect
+    self.sock = sock = self._new_conn()
+                       ^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <HTTPSConnection(host='studio.genlayer.com', port=443) at 0x7237642c5f90>
+
+    def _new_conn(self) -> socket.socket:
+        """Establish a socket connection and set nodelay settings on it.
+    
+        :return: New socket connection.
+        """
+        try:
+            sock = connection.create_connection(
+                (self._dns_host, self.port),
+                self.timeout,
+                source_address=self.source_address,
+                socket_options=self.socket_options,
+            )
+        except socket.gaierror as e:
+>           raise NameResolutionError(self.host, self, e) from e
+E           urllib3.exceptions.NameResolutionError: HTTPSConnection(host='studio.genlayer.com', port=443): Failed to resolve 'studio.genlayer.com' ([Errno -3] Temporary failure in name resolution)
+
+.venv/lib/python3.14/site-packages/urllib3/connection.py:246: NameResolutionError
+
+The above exception was the direct cause of the following exception:
+
+self = <requests.adapters.HTTPAdapter object at 0x72376419e250>
+request = <PreparedRequest [POST]>, stream = False
+timeout = Timeout(connect=10, read=45, total=None), verify = True, cert = None
+proxies = OrderedDict()
+
+    def send(
+        self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None
+    ):
+        """Sends PreparedRequest object. Returns Response object.
+    
+        :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.
+        :param stream: (optional) Whether to stream the request content.
+        :param timeout: (optional) How long to wait for the server to send
+            data before giving up, as a float, or a :ref:`(connect timeout,
+            read timeout) <timeouts>` tuple.
+        :type timeout: float or tuple or urllib3 Timeout object
+        :param verify: (optional) Either a boolean, in which case it controls whether
+            we verify the server's TLS certificate, or a string, in which case it
+            must be a path to a CA bundle to use
+        :param cert: (optional) Any user-provided SSL certificate to be trusted.
+        :param proxies: (optional) The proxies dictionary to apply to the request.
+        :rtype: requests.Response
+        """
+    
+        try:
+            conn = self.get_connection_with_tls_context(
+                request, verify, proxies=proxies, cert=cert
+            )
+        except LocationValueError as e:
+            raise InvalidURL(e, request=request)
+    
+        self.cert_verify(conn, request.url, verify, cert)
+        url = self.request_url(request, proxies)
+        self.add_headers(
+            request,
+            stream=stream,
+            timeout=timeout,
+            verify=verify,
+            cert=cert,
+            proxies=proxies,
+        )
+    
+        chunked = not (request.body is None or "Content-Length" in request.headers)
+    
+        if isinstance(timeout, tuple):
+            try:
+                connect, read = timeout
+                timeout = TimeoutSauce(connect=connect, read=read)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid timeout {timeout}. Pass a (connect, read) timeout tuple, "
+                    f"or a single float to set both timeouts to the same value."
+                )
+        elif isinstance(timeout, TimeoutSauce):
+            pass
+        else:
+            timeout = TimeoutSauce(connect=timeout, read=timeout)
+    
+        try:
+>           resp = conn.urlopen(
+                method=request.method,
+                url=url,
+                body=request.body,
+                headers=request.headers,
+                redirect=False,
+                assert_same_host=False,
+                preload_content=False,
+                decode_content=False,
+                retries=self.max_retries,
+                timeout=timeout,
+                chunked=chunked,
+            )
+
+.venv/lib/python3.14/site-packages/requests/adapters.py:644: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.14/site-packages/urllib3/connectionpool.py:847: in urlopen
+    retries = retries.increment(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = Retry(total=0, connect=None, read=False, redirect=None, status=None)
+method = 'POST', url = '/api', response = None
+error = NameResolutionError("HTTPSConnection(host='studio.genlayer.com', port=443): Failed to resolve 'studio.genlayer.com' ([Errno -3] Temporary failure in name resolution)")
+_pool = <urllib3.connectionpool.HTTPSConnectionPool object at 0x723764450510>
+_stacktrace = <traceback object at 0x72376435b1c0>
+
+    def increment(
+        self,
+        method: str | None = None,
+        url: str | None = None,
+        response: BaseHTTPResponse | None = None,
+        error: Exception | None = None,
+        _pool: ConnectionPool | None = None,
+        _stacktrace: TracebackType | None = None,
+    ) -> Self:
+        """Return a new Retry object with incremented retry counters.
+    
+        :param response: A response object, or None, if the server did not
+            return a response.
+        :type response: :class:`~urllib3.response.BaseHTTPResponse`
+        :param Exception error: An error encountered during the request, or
+            None if the response was received successfully.
+    
+        :return: A new ``Retry`` object.
+        """
+        if self.total is False and error:
+            # Disabled, indicate to re-raise the error.
+            raise reraise(type(error), error, _stacktrace)
+    
+        total = self.total
+        if total is not None:
+            total -= 1
+    
+        connect = self.connect
+        read = self.read
+        redirect = self.redirect
+        status_count = self.status
+        other = self.other
+        cause = "unknown"
+        status = None
+        redirect_location = None
+    
+        if error and self._is_connection_error(error):
+            # Connect retry?
+            if connect is False:
+                raise reraise(type(error), error, _stacktrace)
+            elif connect is not None:
+                connect -= 1
+    
+        elif error and self._is_read_error(error):
+            # Read retry?
+            if read is False or method is None or not self._is_method_retryable(method):
+                raise reraise(type(error), error, _stacktrace)
+            elif read is not None:
+                read -= 1
+    
+        elif error:
+            # Other retry?
+            if other is not None:
+                other -= 1
+    
+        elif response and response.get_redirect_location():
+            # Redirect retry?
+            if redirect is not None:
+                redirect -= 1
+            cause = "too many redirects"
+            response_redirect_location = response.get_redirect_location()
+            if response_redirect_location:
+                redirect_location = response_redirect_location
+            status = response.status
+    
+        else:
+            # Incrementing because of a server error like a 500 in
+            # status_forcelist and the given method is in the allowed_methods
+            cause = ResponseError.GENERIC_ERROR
+            if response and response.status:
+                if status_count is not None:
+                    status_count -= 1
+                cause = ResponseError.SPECIFIC_ERROR.format(status_code=response.status)
+                status = response.status
+    
+        history = self.history + (
+            RequestHistory(method, url, error, status, redirect_location),
+        )
+    
+        new_retry = self.new(
+            total=total,
+            connect=connect,
+            read=read,
+            redirect=redirect,
+            status=status_count,
+            other=other,
+            history=history,
+        )
+    
+        if new_retry.is_exhausted():
+            reason = error or ResponseError(cause)
+>           raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='studio.genlayer.com', port=443): Max retries exceeded with url: /api (Caused by NameResolutionError("HTTPSConnection(host='studio.genlayer.com', port=443): Failed to resolve 'studio.genlayer.com' ([Errno -3] Temporary failure in name resolution)"))
+
+.venv/lib/python3.14/site-packages/urllib3/util/retry.py:555: MaxRetryError
+
+During handling of the above exception, another exception occurred:
+
+live = (<scripts.studio.Studio object at 0x723764620ad0>, '0x73605186B7E933e41F956ac6C07B6A6ac15d6943', '0xAB1088beC2fF410819...', 'channel': 'signed-synthetic-https', 'url_prefix': 'https://httpbingo.org/base64/', ...}, 'role': 'deployer'}, ...})
+
+    def test_01_three_independent_measurements_and_shared_infrastructure(live):
+        studio, source, resolver, insurance, _ = live
+        batch = open_request(live, "event-permitted", ["alpha", "beta", "gamma"], "event-independence", resolver)
+        for consumer, role, action in [(resolver, "resolver", "RESOLVED"), (insurance, "insurance", "UNDERWRITING_ENABLED")]:
+            configure_and_bind(live, batch, consumer, role, 3, action)
+>       for decision, receipt in assess_pairs(live, "event-permitted", [("alpha", "beta"), ("alpha", "gamma"), ("beta", "gamma")]):
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/test_studio.py:156: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/integration/test_studio.py:115: in assess_pairs
+    tx = studio.submit(label, source, "assess_pair", [request_id, left, right], wait_for_finality=False)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+scripts/studio.py:264: in submit
+    tx = c.write_contract(address=address, function_name=method, args=args or [], value=value, leader_only=False)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/genlayer_py/client/genlayer_client.py:118: in write_contract
+    return write_contract(
+.venv/lib/python3.14/site-packages/genlayer_py/contracts/actions.py:123: in write_contract
+    return _send_transaction(
+.venv/lib/python3.14/site-packages/genlayer_py/contracts/actions.py:344: in _send_transaction
+    tx_hash = self.provider.make_request(
+scripts/studio.py:159: in paced
+    response = requests.post(c.provider.url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=(10, 45))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/requests/api.py:115: in post
+    return request("post", url, data=data, json=json, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/requests/api.py:59: in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/requests/sessions.py:589: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/requests/sessions.py:703: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <requests.adapters.HTTPAdapter object at 0x72376419e250>
+request = <PreparedRequest [POST]>, stream = False
+timeout = Timeout(connect=10, read=45, total=None), verify = True, cert = None
+proxies = OrderedDict()
+
+    def send(
+        self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None
+    ):
+        """Sends PreparedRequest object. Returns Response object.
+    
+        :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.
+        :param stream: (optional) Whether to stream the request content.
+        :param timeout: (optional) How long to wait for the server to send
+            data before giving up, as a float, or a :ref:`(connect timeout,
+            read timeout) <timeouts>` tuple.
+        :type timeout: float or tuple or urllib3 Timeout object
+        :param verify: (optional) Either a boolean, in which case it controls whether
+            we verify the server's TLS certificate, or a string, in which case it
+            must be a path to a CA bundle to use
+        :param cert: (optional) Any user-provided SSL certificate to be trusted.
+        :param proxies: (optional) The proxies dictionary to apply to the request.
+        :rtype: requests.Response
+        """
+    
+        try:
+            conn = self.get_connection_with_tls_context(
+                request, verify, proxies=proxies, cert=cert
+            )
+        except LocationValueError as e:
+            raise InvalidURL(e, request=request)
+    
+        self.cert_verify(conn, request.url, verify, cert)
+        url = self.request_url(request, proxies)
+        self.add_headers(
+            request,
+            stream=stream,
+            timeout=timeout,
+            verify=verify,
+            cert=cert,
+            proxies=proxies,
+        )
+    
+        chunked = not (request.body is None or "Content-Length" in request.headers)
+    
+        if isinstance(timeout, tuple):
+            try:
+                connect, read = timeout
+                timeout = TimeoutSauce(connect=connect, read=read)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid timeout {timeout}. Pass a (connect, read) timeout tuple, "
+                    f"or a single float to set both timeouts to the same value."
+                )
+        elif isinstance(timeout, TimeoutSauce):
+            pass
+        else:
+            timeout = TimeoutSauce(connect=timeout, read=timeout)
+    
+        try:
+            resp = conn.urlopen(
+                method=request.method,
+                url=url,
+                body=request.body,
+                headers=request.headers,
+                redirect=False,
+                assert_same_host=False,
+                preload_content=False,
+                decode_content=False,
+                retries=self.max_retries,
+                timeout=timeout,
+                chunked=chunked,
+            )
+    
+        except (ProtocolError, OSError) as err:
+            raise ConnectionError(err, request=request)
+    
+        except MaxRetryError as e:
+            if isinstance(e.reason, ConnectTimeoutError):
+                # TODO: Remove this in 3.0.0: see #2811
+                if not isinstance(e.reason, NewConnectionError):
+                    raise ConnectTimeout(e, request=request)
+    
+            if isinstance(e.reason, ResponseError):
+                raise RetryError(e, request=request)
+    
+            if isinstance(e.reason, _ProxyError):
+                raise ProxyError(e, request=request)
+    
+            if isinstance(e.reason, _SSLError):
+                # This branch is for urllib3 v1.22 and later.
+                raise SSLError(e, request=request)
+    
+>           raise ConnectionError(e, request=request)
+E           requests.exceptions.ConnectionError: HTTPSConnectionPool(host='studio.genlayer.com', port=443): Max retries exceeded with url: /api (Caused by NameResolutionError("HTTPSConnection(host='studio.genlayer.com', port=443): Failed to resolve 'studio.genlayer.com' ([Errno -3] Temporary failure in name resolution)"))
+
+.venv/lib/python3.14/site-packages/requests/adapters.py:677: ConnectionError
+=========================== short test summary info ============================
+FAILED tests/integration/test_studio.py::test_01_three_independent_measurements_and_shared_infrastructure
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+======================== 1 failed in 402.22s (0:06:42) =========================
+2026-11-03: retrying confirmed untransmitted assessment against its existing paid reservation
+assess-event-permitted-beta-gamma-1 SUBMITTED 0xc2960315e5fc0e95b4c4f1a35705c1f228605a3faff38d132029616fe851acf3
+assess-event-permitted-beta-gamma-1 FINALIZED success 0xc2960315e5fc0e95b4c4f1a35705c1f228605a3faff38d132029616fe851acf3
+Third assessment finalized; resuming identical ordered sixteen scenarios
+INFO: File `gltest.config.yaml` found in the current directory, using it
+INFO: Clearing artifacts directory: artifacts
+INFO: Using the following configuration:
+INFO:   RPC URL: http://127.0.0.1:4000/api
+INFO:   Selected Network: localnet
+INFO:   Available networks: ['studionet', 'localnet']
+INFO:   Selected chain type: localnet
+INFO:   Available chains: localnet, studionet, testnet_asimov, testnet_bradbury
+INFO:   Contracts directory: contracts
+INFO:   Artifacts directory: artifacts
+INFO:   Environment: .env
+INFO:   Default wait interval: 3000 ms
+INFO:   Default wait retries: 50
+INFO:   Leader only mode: False
+============================= test session starts ==============================
+platform linux -- Python 3.14.4, pytest-9.1.1, pluggy-1.7.0 -- /home/dotmantissa/GenLayer_dApps/primitives/rhizome/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/dotmantissa/GenLayer_dApps/primitives/rhizome
+configfile: pytest.ini
+plugins: genlayer-test-0.29.2
+collecting ... collected 16 items
+
+tests/integration/test_studio.py::test_01_three_independent_measurements_and_shared_infrastructure seal-event-permitted SUBMITTED 0x0fe5a923845c5a3250c3e643faa87fc0ff2de65c320e0e53ac21866411aa2204
+seal-event-permitted FINALIZED success 0x0fe5a923845c5a3250c3e643faa87fc0ff2de65c320e0e53ac21866411aa2204
+publish-resolver-permitted SUBMITTED 0xfcc670fea0c11a58bf886d80632b1a7352f2fa6d6d814ea2e70f1d9970642898
+publish-resolver-permitted FINALIZED success 0xfcc670fea0c11a58bf886d80632b1a7352f2fa6d6d814ea2e70f1d9970642898
+publish-resolver-permitted-child-0 FINALIZED success 0x7c9b78b6b823b574011a905179077e7c76b8fe958c31aef20a6ac58054619c58
+publish-resolver-permitted-child-0-child-0 FINALIZED success 0xf888f124e9c410b6a2bdb3e73c686274b5f859dbfc3ab3c8a586dee0d86f541a
+action-resolver-permitted SUBMITTED 0xc21114b7b51fb248cb399284671892038bad630ab1961e9be6500b41e482b986
+action-resolver-permitted FINALIZED success 0xc21114b7b51fb248cb399284671892038bad630ab1961e9be6500b41e482b986
+publish-insurance-permitted SUBMITTED 0xe433f2879b1cb59ae81759a26ef492935bc0eea1aca6cf8580db9c885b5414e3
+publish-insurance-permitted FINALIZED success 0xe433f2879b1cb59ae81759a26ef492935bc0eea1aca6cf8580db9c885b5414e3
+publish-insurance-permitted-child-0 FINALIZED success 0xc3464c3356295c6ac5b231cf4abbce7fafa7a8d77b59ce72e8b16b7443e62f22
+publish-insurance-permitted-child-0-child-0 FINALIZED success 0x671c428f42a0b6ecad6d983b525a141a31f33b051b0fc46f43cc968ecf668088
+RPC rate limited; retrying the same request after 211 seconds
+action-insurance-permitted SUBMITTED 0xcb38fd5f1c7dad71fd09a1f0600406906328d316e8aef8babbe10d277b4da4a1

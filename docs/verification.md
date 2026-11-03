@@ -2,9 +2,11 @@
 
 ## Corrected deployment qualification
 
-The current `reviewer-v5` contracts match committed source `92d39d9` byte for byte; all four deployment receipts finalized successfully with independent validators. The working source passes 119 direct tests and 31 client/history tests, including 38 security regressions. All four pinned contract lints pass.
+The current `reviewer-v5` contracts match committed source `92d39d9` byte for byte; all four deployment receipts finalized successfully with independent validators. The working source passes 119 direct tests and 36 client/history tests, including 38 security regressions. All four pinned contract lints pass.
 
-The current [partial report](../verification/reviewer-v5/verification-summary.json) checks 66 finalized transactions and 27 authenticated finality confirmations. No corrected application scenario has completed at this checkpoint, so the release remains unqualified. [Local recovery checks](../verification/reviewer-v5/local-recovery-tests.log) record all 150 passing tests.
+The current [partial report](../verification/reviewer-v5/verification-summary.json) checks finalized transactions, authenticated finality confirmations and accepted semantic assessments as the hosted suite progresses. The release remains unqualified until all sixteen scenarios pass the strict gate. [Local recovery checks](../verification/reviewer-v5/local-dns-recovery-tests.log) record all 155 passing tests, including bounded identical signed-byte retries after typed DNS failures and exact-hash recovery when a later retry has an ambiguous outcome. The [reservation recovery](../verification/reviewer-v5/reservation-recovery.json) and [assessment DNS reconciliation](../verification/reviewer-v5/assessment-dns-reconciliation.json) preserve the public operation evidence without creating another paid reservation.
+
+[Fresh public replay](../verification/reviewer-v5/public-recovery-replay.log) succeeds in partial mode without credentials or the private journal. The same snapshot correctly fails the strict gate because hosted qualification remains incomplete.
 
 The previous `reviewer-v4` run stopped at the hosted synchronous `LATEST_FINAL` timeout and remains unqualified. The current source uses authenticated self-confirmations emitted after each creating parent finalizes, with exact commitment checks and monotonic revision/generation indices. Eight new direct regressions cover forged confirmations, tentative replays, admission/delegation gates, reordered confirmations and confirmation lag.
 
