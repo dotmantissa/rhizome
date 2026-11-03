@@ -59,37 +59,56 @@ def one_child(studio, receipt, label, expected_error=False):
 
 def test_12_failed_fee_refunds_forward_once_to_fixed_treasury(live):
     studio, _, _, insurance, catalog = live
-    treasury = deploy_probe(studio, "deploy-rejecting-treasury", (ROOT / "tests/contracts/rejecting_treasury.py").read_bytes())
-    source = deploy_probe(studio, "deploy-refund-rhizome", (ROOT / "contracts/rhizome.py").read_bytes(), [treasury, 1])
-    provision(studio, source, catalog, "refund-independence", 2)
+    treasury = deploy_probe(studio, "deploy-assisted-refund-treasury", (ROOT / "tests/contracts/refunding_treasury.py").read_bytes())
+    source = deploy_probe(studio, "deploy-assisted-refund-rhizome", (ROOT / "contracts/rhizome.py").read_bytes(), [treasury, 1])
+    provision(studio, source, catalog, "refund-assisted-independence", 2)
     probe = studio, source, None, insurance, catalog
-    open_request(probe, "refund-recovery", ["delta", "epsilon"], "refund-independence", insurance)
-    reserved = studio.submit("refund-reservation", source, "reserve_pair",
-                             ["refund-recovery", "delta", "epsilon", "refund-hold"], value=1)
-    failed = one_child(studio, reserved, "refund-fee-failure", expected_error=True)
-    studio.drain(failed, "refund-fee-failure")
-    before = studio.read(source, "get_limits")
+    request = "refund-assisted-recovery"
+    open_request(probe, request, ["delta", "epsilon"], "refund-assisted-independence", insurance)
+    reserved = studio.submit("refund-assisted-reservation", source, "reserve_pair",
+                             [request, "delta", "epsilon", "assisted-refund-hold"], value=1)
+    failed = one_child(studio, reserved, "refund-assisted-fee-failure", expected_error=True)
+    studio.drain(failed, "refund-assisted-fee-failure")
+    # Studio credits failed receivers but does not schedule the SDK refund.
+    # The controlled receiver explicitly returns the actual failed fee value.
+    returned = studio.submit("refund-assisted-return-initial", treasury, "return_failed_fee", ["initial-fee-return", source])
+    studio.drain(returned, "refund-assisted-return-initial")
+    before = refund_checkpoint(studio, "initial-return", source)
     assert before["retained_fee_balance_atto"] == before["charged_atto"] == 1
-    # A retry can itself fail. Its genuine refund remains recoverable under a
-    # new operation; replay of the old operation must never send value twice.
-    retry = studio.submit("refund-retry-refused", source, "retry_treasury_transfer", ["refused-retry", 1])
-    retry_failed = one_child(studio, retry, "refund-retry-fee-failure", expected_error=True)
-    studio.drain(retry_failed, "refund-retry-fee-failure")
-    assert studio.read(source, "get_limits")["retained_fee_balance_atto"] == 1
-    studio.submit("refund-enable-treasury", treasury, "enable")
-    recovered = studio.submit("refund-retry-success", source, "retry_treasury_transfer", ["successful-retry", 1])
-    studio.drain(recovered, "refund-retry-success")
-    replay = studio.submit("refund-retry-replay", source, "retry_treasury_transfer", ["successful-retry", 1])
+    retry = studio.submit("refund-assisted-retry-refused", source, "retry_treasury_transfer", ["refused-retry", 1])
+    retry_failed = one_child(studio, retry, "refund-assisted-retry-fee-failure", expected_error=True)
+    studio.drain(retry_failed, "refund-assisted-retry-fee-failure")
+    returned_retry = studio.submit("refund-assisted-return-retry", treasury, "return_failed_fee", ["retry-fee-return", source])
+    studio.drain(returned_retry, "refund-assisted-return-retry")
+    assert refund_checkpoint(studio, "retry-return", source)["retained_fee_balance_atto"] == 1
+    studio.submit("refund-assisted-enable-treasury", treasury, "enable")
+    recovered = studio.submit("refund-assisted-retry-success", source, "retry_treasury_transfer", ["successful-retry", 1])
+    studio.drain(recovered, "refund-assisted-retry-success")
+    replay = studio.submit("refund-assisted-retry-replay", source, "retry_treasury_transfer", ["successful-retry", 1])
     assert replay.get("triggered_transactions", []) == []
     assert studio.read(treasury, "get_totals") == {"received_atto": 1, "balance_atto": 1}
     assert studio.read(source, "get_limits")["retained_fee_balance_atto"] == 0
-    assert studio.read(source, "get_pair", ["refund-recovery", "delta", "epsilon"])["attempts"] == 1
+    assert studio.read(source, "get_pair", [request, "delta", "epsilon"])["attempts"] == 1
     write_json(VERIFICATION / "refund-recovery.json", {
-        "classification": "REAL HOSTED FAILED TRANSFERS AND SDK REFUNDS; CONTROLLED REJECTING RECEIVER",
+        "classification": "REAL HOSTED FAILED TRANSFERS AND RECEIVER-ASSISTED RETURNS THROUGH SDK HANDLER; NOT AUTOMATIC PROTOCOL REFUNDS",
         "source": source, "production_source_sha256": hashlib.sha256((ROOT / "contracts/rhizome.py").read_bytes()).hexdigest(),
         "treasury": treasury, "initial_failure": failed["hash"], "retry_failure": retry_failed["hash"],
+        "receiver_assisted_returns": [returned["hash"], returned_retry["hash"]],
         "recovery": recovered["hash"], "replay": replay["hash"], "retained_balance_atto": 0,
     })
+
+
+def refund_checkpoint(studio, phase, source):
+    """Preserve original live intermediate balances across an interrupted replay."""
+    path = VERIFICATION / ("refund-assisted-checkpoint-" + phase + ".json")
+    if path.exists():
+        saved = json.loads(path.read_text())
+        assert saved["source"] == source and saved["phase"] == phase
+        return saved["original_live_limits"]
+    result = studio.read(source, "get_limits")
+    write_json(path, {"classification": "ORIGINAL LIVE INTERMEDIATE BALANCE; HISTORICAL CHECKPOINT ON RESUME",
+                      "source": source, "phase": phase, "original_live_limits": result})
+    return result
 
 
 def restriction_probe_code():

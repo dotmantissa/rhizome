@@ -114,6 +114,23 @@ def check_finality_confirmation(parent, child, args):
     assert calldata.decode(encoded[0]) == make_calldata_object(method="confirm_finalized_record", args=args, kwargs=None), "confirmation record commitment differs"
 
 
+def transaction_hash(child):
+    return child if isinstance(child, str) else child.get("hash", child.get("tx_id"))
+
+
+def check_native_child(parent, child, destination, method, succeeds=True):
+    """Audit exact value, method, execution and authenticated emission provenance."""
+    assert parent["status_name"] == child["status_name"] == "FINALIZED"
+    assert successful(parent) and successful(child) == succeeds, "native child execution differs"
+    assert child["triggered_by"] == parent["hash"] and child["triggered_on"] == "finalized", "native child provenance differs"
+    assert child["from_address"] == parent["to_address"] and child["to_address"] == destination, "native child endpoints differ"
+    assert child["hash"] in [transaction_hash(item) for item in parent["triggered_transactions"]]
+    assert int(child["value"]) == 1, "native child value differs"
+    encoded = rlp.decode(bytes.fromhex(child["tx_data"].removeprefix("0x")))
+    assert len(encoded) == 2 and encoded[1] == b"\x00"
+    assert calldata.decode(encoded[0]) == {"method": method}, "native child method differs"
+
+
 def report(partial=False):
     deployment = json.loads((VERIFICATION / "deployment.json").read_text())
     outcomes_path = VERIFICATION / "integration-results.json"
@@ -133,7 +150,7 @@ def report(partial=False):
                          "audit-invalid-consumer-policy", "audit-invalid-consumer-binding",
                          "audit-invalid-resolver-policy", "audit-invalid-resolver-binding",
                          "audit-forged-finality-confirmation",
-                         "refund-fee-failure", "refund-retry-fee-failure"}
+                         "refund-fee-failure", "refund-assisted-fee-failure", "refund-assisted-retry-fee-failure"}
     for name, contract in deployment["contracts"].items():
         receipt = receipts["deploy-" + name]
         assert receipt["hash"] == contract["deployment_tx"] and successful(receipt), name
@@ -380,29 +397,73 @@ def report(partial=False):
                     if payload["method"] == "reserve_pair" and operation in receipts and successful(receipts[operation])]
     recoveries = []
     if not partial:
-        refund_source = receipts["deploy-refund-rhizome"]["to_address"]
-        refund_treasury = receipts["deploy-rejecting-treasury"]["to_address"]
-        assert intents["deploy-refund-rhizome"]["code_sha256"] == deployment["contracts"]["rhizome"]["code_sha256"], "refund probe must execute exact production source"
-        assert intents["deploy-refund-rhizome"]["args"] == [refund_treasury, 1]
+        # Preserve the original failed probe: its receiver retained one atto,
+        # and Studio emitted no automatic refund. It cannot qualify recovery.
+        original_source = receipts["deploy-refund-rhizome"]["to_address"]
+        original_treasury = receipts["deploy-rejecting-treasury"]["to_address"]
+        assert intents["deploy-refund-rhizome"]["code_sha256"] == deployment["contracts"]["rhizome"]["code_sha256"]
+        assert intents["deploy-refund-rhizome"]["args"] == [original_treasury, 1]
         assert intents["deploy-rejecting-treasury"]["code_sha256"] == hashlib.sha256((ROOT / "tests/contracts/rejecting_treasury.py").read_bytes()).hexdigest()
-        for operation, parent in (("refund-fee-failure", "refund-reservation"),
-                                  ("refund-retry-fee-failure", "refund-retry-refused")):
-            failure = receipts[operation]
-            assert not successful(failure) and failure["triggered_by"] == receipts[parent]["hash"]
-            assert failure["from_address"] == refund_source and failure["to_address"] == refund_treasury and int(failure["value"]) == 1
-        recovered = receipts["refund-retry-success"]
-        replay = receipts["refund-retry-replay"]
+        original_failure = receipts["refund-fee-failure"]
+        assert receipts["refund-reservation"]["to_address"] == original_source
+        check_native_child(receipts["refund-reservation"], original_failure, original_treasury, "accept_fee", succeeds=False)
+        assert original_failure.get("triggered_transactions", []) == [], "original failure emitted an unexpected refund"
+        probe = json.loads((VERIFICATION / "refund-runtime-probe.json").read_text())
+        assert probe["failed_fee_child"] == original_failure["hash"]
+        observed = {(item["address"], item["method"]): item["result"] for item in probe["observations"]}
+        assert observed[original_source, "get_limits"]["charged_atto"] == 1
+        assert observed[original_source, "get_limits"]["retained_fee_balance_atto"] == 0
+        assert observed[original_treasury, "get_totals"] == {"received_atto": 0, "balance_atto": 1}
+        assert int(observed[original_source, "eth_getBalance"], 16) == 0
+        assert int(observed[original_treasury, "eth_getBalance"], 16) == 1
+        recoveries.append({"kind": "original_failed_fee_without_automatic_refund", "source": original_source,
+                           "treasury": original_treasury, "failure": original_failure["hash"],
+                           "receiver_held_atto": 1, "automatic_protocol_refund_proof": False})
+        refund_source = receipts["deploy-assisted-refund-rhizome"]["to_address"]
+        refund_treasury = receipts["deploy-assisted-refund-treasury"]["to_address"]
+        assert intents["deploy-assisted-refund-rhizome"]["code_sha256"] == deployment["contracts"]["rhizome"]["code_sha256"], "refund probe must execute exact production source"
+        assert intents["deploy-assisted-refund-rhizome"]["args"] == [refund_treasury, 1]
+        assert intents["deploy-assisted-refund-treasury"]["code_sha256"] == hashlib.sha256((ROOT / "tests/contracts/refunding_treasury.py").read_bytes()).hexdigest()
+        for name in ("deploy-assisted-refund-rhizome", "deploy-assisted-refund-treasury"):
+            assert successful(receipts[name]) and len(validator_addresses(receipts[name])) >= 2
+        returned = []
+        for failure_name, parent_name, return_name, operation_id, phase in (
+                ("refund-assisted-fee-failure", "refund-assisted-reservation", "refund-assisted-return-initial", "initial-fee-return", "initial-return"),
+                ("refund-assisted-retry-fee-failure", "refund-assisted-retry-refused", "refund-assisted-return-retry", "retry-fee-return", "retry-return")):
+            failure = receipts[failure_name]
+            assert receipts[parent_name]["to_address"] == refund_source
+            check_native_child(receipts[parent_name], failure, refund_treasury, "accept_fee", succeeds=False)
+            assert failure.get("triggered_transactions", []) == []
+            parent = receipts[return_name]
+            intent = intents[return_name]
+            assert intent["address"] == refund_treasury and intent["sender"] == intents["deploy-assisted-refund-treasury"]["sender"]
+            assert intent["method"] == "return_failed_fee" and intent["args"] == [operation_id, refund_source]
+            record = json.loads(leader(parent)["result"]["payload"]["readable"])
+            assert record == {"operation_id": operation_id, "source": refund_source, "amount_atto": 1,
+                              "status": "EMITTED_ON_FINALIZED", "kind": "CONTROLLED_RECEIVER_RETURN"}
+            assert len(parent["triggered_transactions"]) == 1
+            child_hash = transaction_hash(parent["triggered_transactions"][0])
+            check_native_child(parent, by_hash[child_hash], refund_source, "__on_errored_message__")
+            checkpoint = json.loads((VERIFICATION / ("refund-assisted-checkpoint-" + phase + ".json")).read_text())
+            assert checkpoint["source"] == refund_source and checkpoint["phase"] == phase
+            assert checkpoint["original_live_limits"]["retained_fee_balance_atto"] == checkpoint["original_live_limits"]["charged_atto"] == 1
+            returned.append({"parent": parent["hash"], "sdk_handler_child": child_hash})
+        recovered = receipts["refund-assisted-retry-success"]
+        replay = receipts["refund-assisted-retry-replay"]
         record = json.loads(leader(recovered)["result"]["payload"]["readable"])
         assert successful(recovered) and successful(replay) and record["treasury"] == refund_treasury
+        for name in ("refund-assisted-retry-refused", "refund-assisted-retry-success", "refund-assisted-retry-replay"):
+            assert intents[name]["address"] == refund_source
+            assert intents[name]["sender"] == intents["deploy-assisted-refund-rhizome"]["sender"]
+            assert intents[name]["method"] == "retry_treasury_transfer"
         assert record["amount_atto"] == 1 and record["status"] == "EMITTED_ON_FINALIZED"
         assert json.loads(leader(replay)["result"]["payload"]["readable"]) == record and replay.get("triggered_transactions", []) == []
         assert len(recovered["triggered_transactions"]) == 1
-        child_hash = recovered["triggered_transactions"][0]
-        child_hash = child_hash if isinstance(child_hash, str) else child_hash.get("hash", child_hash.get("tx_id"))
-        child = by_hash[child_hash]
-        assert successful(child) and child["from_address"] == refund_source and child["to_address"] == refund_treasury and int(child["value"]) == 1
-        recoveries.append({"kind": "failed_fee_refund_and_retry", "source": refund_source, "treasury": refund_treasury,
-                           "failure": receipts["refund-fee-failure"]["hash"], "retry_failure": receipts["refund-retry-fee-failure"]["hash"],
+        child_hash = transaction_hash(recovered["triggered_transactions"][0])
+        check_native_child(recovered, by_hash[child_hash], refund_treasury, "accept_fee")
+        recoveries.append({"kind": "receiver_assisted_fee_return_and_retry", "source": refund_source, "treasury": refund_treasury,
+                           "failure": receipts["refund-assisted-fee-failure"]["hash"], "retry_failure": receipts["refund-assisted-retry-fee-failure"]["hash"],
+                           "receiver_assisted_returns": returned, "automatic_protocol_refund_proof": False,
                            "recovery": recovered["hash"], "payment_child": child_hash, "replay": replay["hash"]})
         probe_source = receipts["deploy-restriction-source"]["to_address"]
         assert intents["deploy-restriction-source"]["code_sha256"] == hashlib.sha256((VERIFICATION / "recovery-probe-source.py").read_bytes()).hexdigest()
