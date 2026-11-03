@@ -40,7 +40,7 @@ def transport(monkeypatch, tmp_path):
         responses = iter(responses)
 
         def post(url, **kwargs):
-            assert kwargs["timeout"] == (10, 45)
+            assert kwargs["timeout"] == (30, 45)
             assert kwargs["allow_redirects"] is False
             calls.append(kwargs["json"])
             response = next(responses)
@@ -211,6 +211,66 @@ def test_signed_attempt_recovers_original_receipt_or_stops_without_replacement(t
             instance.submit("recover", "synthetic-contract", "reserve_pair", ["request"], value=1)
         assert instance.records[-1]["event"] == "SEND_ATTEMPT"
     assert lookups == ["synthetic-eth-hash"]
+
+
+@pytest.mark.parametrize("error", [requests.ReadTimeout("synthetic lost response"), response(502)])
+@pytest.mark.parametrize("receipt_available", [True, False])
+def test_interrupted_submission_immediately_recovers_only_its_original_hash(transport, error, receipt_available):
+    instance, _, _, _ = transport
+    instance.accounts["deployer"] = SimpleNamespace(address="synthetic-sender")
+    writes, lookups, nonces = [], [], []
+
+    def write(**kwargs):
+        writes.append(kwargs)
+        instance.log({"event": "SEND_ATTEMPT", "operation": "recover-now", "ethereum_hash": "original-hash"})
+        if isinstance(error, requests.Response):
+            error.raise_for_status()
+        raise error
+
+    def get_receipt(tx):
+        lookups.append(tx)
+        if not receipt_available:
+            from web3.exceptions import TransactionNotFound
+            raise TransactionNotFound("not yet observed")
+        return {"status": 1}
+
+    event = SimpleNamespace(process_receipt=lambda receipt, discard: [{"args": {"txId": "original-consensus-id"}}])
+    client = SimpleNamespace(
+        get_current_nonce=lambda **kwargs: nonces.append(kwargs) or 7, write_contract=write,
+        w3=SimpleNamespace(eth=SimpleNamespace(get_transaction_receipt=get_receipt,
+                            contract=lambda **kwargs: SimpleNamespace(get_event_by_name=lambda name: event)),
+                            to_hex=lambda value: value),
+        chain=SimpleNamespace(consensus_main_contract={"abi": []}))
+    instance.client = lambda role="deployer": client
+    if receipt_available:
+        assert instance.submit("recover-now", "contract", "reserve_pair", ["request"], value=1,
+                               wait_for_finality=False) == "original-consensus-id"
+        assert instance.records[-1]["event"] == "SUBMITTED" and instance.records[-1]["recovered"]
+    else:
+        from web3.exceptions import TransactionNotFound
+        with pytest.raises(TransactionNotFound):
+            instance.submit("recover-now", "contract", "reserve_pair", ["request"], value=1,
+                            wait_for_finality=False)
+    assert len(writes) == len(nonces) == 1 and lookups == ["original-hash"]
+
+
+def test_exhausted_untransmitted_send_never_enters_automatic_receipt_recovery(transport):
+    instance, _, _, _ = transport
+    instance.accounts["deployer"] = SimpleNamespace(address="synthetic-sender")
+    writes = []
+
+    def write(**kwargs):
+        writes.append(kwargs)
+        instance.log({"event": "SEND_ATTEMPT", "operation": "unsent", "ethereum_hash": "unsent-hash"})
+        instance.log({"event": "SEND_NOT_TRANSMITTED", "operation": "unsent", "ethereum_hash": "unsent-hash",
+                      "reason": "DNS_FAILURE_BEFORE_CONNECTION"})
+        raise dns_failure()
+
+    instance.client = lambda role="deployer": SimpleNamespace(
+        get_current_nonce=lambda **kwargs: 7, write_contract=write)
+    with pytest.raises(requests.ConnectionError):
+        instance.submit("unsent", "contract", "reserve_pair", ["request"], value=1)
+    assert len(writes) == 1 and instance.records[-1]["event"] == "SEND_NOT_TRANSMITTED"
 
 
 @pytest.mark.parametrize("reconciled", [True, False])

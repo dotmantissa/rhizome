@@ -164,7 +164,7 @@ class Studio:
                             # journal the signed bytes or silently replace a write.
                             self.log({"event": "SEND_ATTEMPT", "operation": self.current_operation,
                                       "ethereum_hash": "0x" + keccak(hexstr=params[0]).hex()})
-                        response = requests.post(c.provider.url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=(10, 45), allow_redirects=False)
+                        response = requests.post(c.provider.url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=(30, 45), allow_redirects=False)
                         if response.status_code == 429:
                             if attempt == 3:
                                 response.raise_for_status()
@@ -256,7 +256,7 @@ class Studio:
         sends = [r for r in old if r["event"] in ("BROADCAST", "SEND_ATTEMPT", "SEND_NOT_TRANSMITTED")]
         attempts = [r for r in sends if r["event"] == "SEND_ATTEMPT"]
         not_transmitted = (bool(sends) and sends[-1]["event"] == "SEND_NOT_TRANSMITTED"
-                           and sends[-1].get("reason") == "DNS_FAILURE_BEFORE_CONNECTION"
+                           and sends[-1].get("reason") in ("DNS_FAILURE_BEFORE_CONNECTION", "TLS_HANDSHAKE_TIMEOUT_BEFORE_REQUEST")
                            and bool(attempts) and sends[-1].get("ethereum_hash") == attempts[-1]["ethereum_hash"]
                            and not any(r["event"] == "BROADCAST" for r in sends))
         broadcasts = [] if not_transmitted else [r for r in sends if r["event"] in ("BROADCAST", "SEND_ATTEMPT")]
@@ -285,6 +285,18 @@ class Studio:
                 tx = c.deploy_contract(code=code, args=args or [], leader_only=False)
             else:
                 tx = c.write_contract(address=address, function_name=method, args=args or [], value=value, leader_only=False)
+        except (requests.RequestException, ValueError) as error:
+            sends = [r for r in self.records if r.get("operation") == label
+                     and r["event"] in ("SEND_ATTEMPT", "BROADCAST", "SEND_NOT_TRANSMITTED")]
+            if not sends or sends[-1]["event"] == "SEND_NOT_TRANSMITTED":
+                raise
+            self.log({"event": "RECOVERING_SIGNED_ATTEMPT", "operation": label,
+                      "ethereum_hash": sends[-1]["ethereum_hash"], "error_class": type(error).__name__})
+            print(label, "transport interrupted; looking up the original signed hash", flush=True)
+            # Re-enter only the existing-attempt receipt branch. If the receipt
+            # is missing or unreadable, it raises before any nonce check/signing.
+            return self.submit(label, address, method, args, role=role, value=value, code=code,
+                               expected_error=expected_error, wait_for_finality=wait_for_finality)
         finally:
             self.current_operation = None
         self.log({"event": "SUBMITTED", "operation": label, "tx": tx})
