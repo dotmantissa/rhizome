@@ -69,7 +69,7 @@ def test_explicit_rate_refusal_retries_identical_signed_request(transport, refus
     assert len(calls) == 2 and calls[0] == calls[1]
     assert sleeps == [60]
     assert [row["event"] for row in instance.records] == [
-        "SEND_ATTEMPT", "RATE_LIMITED", "SEND_ATTEMPT", "BROADCAST"]
+        "SEND_ATTEMPT", "SEND_REFUSED", "RATE_LIMITED", "SEND_ATTEMPT", "BROADCAST"]
 
 
 def test_ambiguous_write_timeout_never_rebroadcasts(transport):
@@ -177,7 +177,8 @@ def test_ambiguous_write_502_preserves_hash_without_retry(transport):
 
 
 @pytest.mark.parametrize("receipt_available", [True, False])
-def test_signed_attempt_recovers_original_receipt_or_stops_without_replacement(transport, receipt_available):
+@pytest.mark.parametrize("later_refusal", [True, False])
+def test_signed_attempt_recovers_original_receipt_or_stops_without_replacement(transport, receipt_available, later_refusal):
     instance, _, _, _ = transport
     instance.accounts["deployer"] = SimpleNamespace(address="synthetic-sender")
     payload = {"address": "synthetic-contract", "method": "reserve_pair", "args": ["request"],
@@ -186,6 +187,12 @@ def test_signed_attempt_recovers_original_receipt_or_stops_without_replacement(t
         {"event": "INTENT", "operation": "recover", "payload_digest": module.digest(payload), "nonce": 7},
         {"event": "SEND_ATTEMPT", "operation": "recover", "ethereum_hash": "synthetic-eth-hash"},
     ])
+    if later_refusal:
+        instance.records.extend([
+            {"event": "BROADCAST", "operation": "recover", "ethereum_hash": "synthetic-eth-hash"},
+            {"event": "SEND_REFUSED", "operation": "recover", "ethereum_hash": "synthetic-eth-hash",
+             "reason": "EXPLICIT_RATE_LIMIT_HTTP_429"},
+        ])
     lookups = []
 
     def get_receipt(tx):
@@ -209,7 +216,7 @@ def test_signed_attempt_recovers_original_receipt_or_stops_without_replacement(t
         from web3.exceptions import TransactionNotFound
         with pytest.raises(TransactionNotFound):
             instance.submit("recover", "synthetic-contract", "reserve_pair", ["request"], value=1)
-        assert instance.records[-1]["event"] == "SEND_ATTEMPT"
+        assert instance.records[-1]["event"] == ("SEND_REFUSED" if later_refusal else "SEND_ATTEMPT")
     assert lookups == ["synthetic-eth-hash"]
 
 
@@ -305,9 +312,57 @@ def test_nonce_drift_requires_an_identical_reconciled_intent(transport, reconcil
 def test_rate_limit_retries_are_bounded(transport):
     instance, run, calls, sleeps = transport
     with pytest.raises(requests.HTTPError):
-        run([response(429) for _ in range(4)])
-    assert len(calls) == 4 and sleeps == [60, 60, 60]
-    assert [row["event"] for row in instance.records] == ["SEND_ATTEMPT", "RATE_LIMITED"] * 3 + ["SEND_ATTEMPT"]
+        run([response(429) for _ in range(module.MAX_RATE_LIMIT_ATTEMPTS)])
+    assert len(calls) == module.MAX_RATE_LIMIT_ATTEMPTS
+    assert sleeps == [60] * (module.MAX_RATE_LIMIT_ATTEMPTS - 1)
+    assert instance.records[-1]["event"] == "SEND_REFUSED"
+
+
+def test_rate_refusals_do_not_exhaust_the_transport_retry_budget(transport):
+    _, run, calls, _ = transport
+    faults = [response(429)] * 5 + [dns_failure()] * 3 + [response()]
+    assert run(faults)["result"] == "synthetic-transaction-hash"
+    assert len(calls) == 9 and all(call == calls[0] for call in calls)
+
+
+def test_rate_refusal_followed_by_timeout_keeps_original_hash_recovery(transport):
+    instance, run, calls, _ = transport
+    with pytest.raises(requests.Timeout):
+        run([response(429), requests.Timeout("lost response")])
+    assert len(calls) == 2 and calls[0] == calls[1]
+    assert instance.records[-1]["event"] == "SEND_ATTEMPT"
+
+
+def test_read_rate_refusals_remain_bounded(transport):
+    _, run, calls, _ = transport
+    with pytest.raises(requests.HTTPError):
+        run([response(429)] * module.MAX_RATE_LIMIT_ATTEMPTS, method="gen_getTransaction")
+    assert len(calls) == module.MAX_RATE_LIMIT_ATTEMPTS
+
+
+@pytest.mark.parametrize("nonce", [7, 9])
+@pytest.mark.parametrize("reason", ["EXPLICIT_RATE_LIMIT_HTTP_429", "EXPLICIT_RATE_LIMIT_RPC_32429"])
+def test_refused_submission_resume_requires_original_nonce(transport, nonce, reason):
+    instance, _, _, _ = transport
+    instance.accounts["deployer"] = SimpleNamespace(address="synthetic-sender")
+    payload = {"address": "contract", "method": "reserve_pair", "args": ["request"],
+               "sender": "synthetic-sender", "value": 1, "code_sha256": None}
+    instance.records.extend([
+        {"event": "INTENT", "operation": "refused", "payload_digest": module.digest(payload), "nonce": 7},
+        {"event": "SEND_ATTEMPT", "operation": "refused", "ethereum_hash": "original-hash"},
+        {"event": "SEND_REFUSED", "operation": "refused", "ethereum_hash": "original-hash", "reason": reason},
+    ])
+    writes = []
+    instance.client = lambda role="deployer": SimpleNamespace(
+        get_current_nonce=lambda **kwargs: nonce, write_contract=lambda **kwargs: writes.append(kwargs) or "tx")
+    if nonce == 7:
+        assert instance.submit("refused", "contract", "reserve_pair", ["request"], value=1,
+                               wait_for_finality=False) == "tx"
+        assert len(writes) == 1
+    else:
+        with pytest.raises(AssertionError, match="unreconciled nonce"):
+            instance.submit("refused", "contract", "reserve_pair", ["request"], value=1)
+        assert writes == []
 
 
 def test_finalized_receipt_recovery_needs_no_rpc_and_checks_execution(transport, monkeypatch, tmp_path):
@@ -345,7 +400,7 @@ def test_server_reset_delay_is_respected_for_identical_write(transport):
     refused.headers["Retry-After"] = "4"
     run([refused, response()])
     assert calls[0] == calls[1] and sleeps == [5]
-    assert instance.records[1]["retry_delay_seconds"] == 5
+    assert next(row for row in instance.records if row["event"] == "RATE_LIMITED")["retry_delay_seconds"] == 5
 
 
 def test_retry_after_date_and_malformed_header(monkeypatch):

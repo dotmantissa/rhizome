@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUN = os.environ.get("RHIZOME_RUN", "")
 assert not RUN or (len(RUN) <= 64 and all(ch.isalnum() or ch in "-_" for ch in RUN)), "invalid verification run name"
 VERIFICATION = ROOT / "verification" / RUN
+MAX_RATE_LIMIT_ATTEMPTS = 32
 
 
 def canonical(value):
@@ -152,7 +153,9 @@ class Studio:
             c = GenLayerClient(chain_config=studionet, account=self.accounts[role])
             def paced(method, params):
                 result = None
-                for attempt in range(4):
+                attempt = 0
+                rate_attempt = 0
+                while attempt < 4:
                     gap = self.min_rpc_interval - (time.monotonic() - self.last_rpc)
                     if gap > 0:
                         time.sleep(gap)
@@ -166,15 +169,26 @@ class Studio:
                                       "ethereum_hash": "0x" + keccak(hexstr=params[0]).hex()})
                         response = requests.post(c.provider.url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=(30, 45), allow_redirects=False)
                         if response.status_code == 429:
-                            if attempt == 3:
+                            if method == "eth_sendRawTransaction":
+                                self.log({"event": "SEND_REFUSED", "operation": self.current_operation,
+                                          "ethereum_hash": "0x" + keccak(hexstr=params[0]).hex(),
+                                          "reason": "EXPLICIT_RATE_LIMIT_HTTP_429"})
+                            rate_attempt += 1
+                            if rate_attempt >= MAX_RATE_LIMIT_ATTEMPTS:
                                 response.raise_for_status()
-                            self.rate_wait(response, method, attempt)
+                            self.rate_wait(response, method, rate_attempt - 1)
                             continue
                         response.raise_for_status()
                         result = response.json()
-                        if (result.get("error") or {}).get("code") == -32429 and attempt < 3:
-                            self.rate_wait(response, method, attempt)
-                            continue
+                        if (result.get("error") or {}).get("code") == -32429:
+                            if method == "eth_sendRawTransaction":
+                                self.log({"event": "SEND_REFUSED", "operation": self.current_operation,
+                                          "ethereum_hash": "0x" + keccak(hexstr=params[0]).hex(),
+                                          "reason": "EXPLICIT_RATE_LIMIT_RPC_32429"})
+                            rate_attempt += 1
+                            if rate_attempt < MAX_RATE_LIMIT_ATTEMPTS:
+                                self.rate_wait(response, method, rate_attempt - 1)
+                                continue
                         c.provider._raise_on_error(result, method)
                         break
                     except (requests.RequestException, ValueError) as error:
@@ -186,10 +200,12 @@ class Studio:
                                 raise
                             print("RPC DNS lookup failed before transmission; retrying identical signed request", flush=True)
                             time.sleep(5)
+                            attempt += 1
                             continue
-                        if method == "eth_sendRawTransaction" or attempt == 3:
+                        if method == "eth_sendRawTransaction" or attempt == 3 or rate_attempt >= MAX_RATE_LIMIT_ATTEMPTS:
                             raise
                         time.sleep(5)
+                        attempt += 1
                 if method == "eth_sendRawTransaction" and result.get("result"):
                     self.log({"event": "BROADCAST", "operation": self.current_operation, "ethereum_hash": result["result"]})
                 return result
@@ -253,13 +269,17 @@ class Studio:
         submitted = [r for r in old if r["event"] == "SUBMITTED"]
         if submitted:
             return self.wait(submitted[-1]["tx"], label, expected_error) if wait_for_finality else submitted[-1]["tx"]
-        sends = [r for r in old if r["event"] in ("BROADCAST", "SEND_ATTEMPT", "SEND_NOT_TRANSMITTED")]
+        sends = [r for r in old if r["event"] in ("BROADCAST", "SEND_ATTEMPT", "SEND_NOT_TRANSMITTED", "SEND_REFUSED")]
         attempts = [r for r in sends if r["event"] == "SEND_ATTEMPT"]
         not_transmitted = (bool(sends) and sends[-1]["event"] == "SEND_NOT_TRANSMITTED"
                            and sends[-1].get("reason") in ("DNS_FAILURE_BEFORE_CONNECTION", "TLS_HANDSHAKE_TIMEOUT_BEFORE_REQUEST")
                            and bool(attempts) and sends[-1].get("ethereum_hash") == attempts[-1]["ethereum_hash"]
                            and not any(r["event"] == "BROADCAST" for r in sends))
-        broadcasts = [] if not_transmitted else [r for r in sends if r["event"] in ("BROADCAST", "SEND_ATTEMPT")]
+        explicitly_refused = (bool(sends) and sends[-1]["event"] == "SEND_REFUSED"
+                              and sends[-1].get("reason") in ("EXPLICIT_RATE_LIMIT_HTTP_429", "EXPLICIT_RATE_LIMIT_RPC_32429")
+                              and bool(attempts) and sends[-1].get("ethereum_hash") == attempts[-1]["ethereum_hash"]
+                              and not any(r["event"] == "BROADCAST" for r in sends))
+        broadcasts = [] if not_transmitted or explicitly_refused else [r for r in sends if r["event"] in ("BROADCAST", "SEND_ATTEMPT")]
         if broadcasts:
             # A saved attempt may have reached the server despite a lost response.
             # If its receipt is absent, propagate the lookup error for reconciliation
@@ -287,8 +307,8 @@ class Studio:
                 tx = c.write_contract(address=address, function_name=method, args=args or [], value=value, leader_only=False)
         except (requests.RequestException, ValueError) as error:
             sends = [r for r in self.records if r.get("operation") == label
-                     and r["event"] in ("SEND_ATTEMPT", "BROADCAST", "SEND_NOT_TRANSMITTED")]
-            if not sends or sends[-1]["event"] == "SEND_NOT_TRANSMITTED":
+                     and r["event"] in ("SEND_ATTEMPT", "BROADCAST", "SEND_NOT_TRANSMITTED", "SEND_REFUSED")]
+            if not sends or sends[-1]["event"] in ("SEND_NOT_TRANSMITTED", "SEND_REFUSED"):
                 raise
             self.log({"event": "RECOVERING_SIGNED_ATTEMPT", "operation": label,
                       "ethereum_hash": sends[-1]["ethereum_hash"], "error_class": type(error).__name__})
