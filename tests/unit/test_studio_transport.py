@@ -41,6 +41,7 @@ def transport(monkeypatch, tmp_path):
 
         def post(url, **kwargs):
             assert kwargs["timeout"] == (10, 45)
+            assert kwargs["allow_redirects"] is False
             calls.append(kwargs["json"])
             response = next(responses)
             if isinstance(response, Exception):

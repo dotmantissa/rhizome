@@ -164,7 +164,7 @@ class Studio:
                             # journal the signed bytes or silently replace a write.
                             self.log({"event": "SEND_ATTEMPT", "operation": self.current_operation,
                                       "ethereum_hash": "0x" + keccak(hexstr=params[0]).hex()})
-                        response = requests.post(c.provider.url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=(10, 45))
+                        response = requests.post(c.provider.url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=(10, 45), allow_redirects=False)
                         if response.status_code == 429:
                             if attempt == 3:
                                 response.raise_for_status()
